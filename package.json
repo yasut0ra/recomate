@@ -1,0 +1,20 @@
+{
+  "name": "recomate",
+  "version": "1.0.0",
+  "description": "会話トピック推薦と能動会話可能なAI",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yasut0ra/recomate.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/yasut0ra/recomate/issues"
+  },
+  "homepage": "https://github.com/yasut0ra/recomate#readme"
+}
