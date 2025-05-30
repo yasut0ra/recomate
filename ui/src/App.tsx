@@ -1,43 +1,24 @@
-import React, { useState } from 'react';
+import React from 'react';
+import Header from './components/Header';
+import Character from './components/Character';
+import ChatContainer from './components/ChatContainer';
+import InputSection from './components/InputSection';
+import { ChatProvider } from './context/ChatContext';
 import './App.css';
 
-const App: React.FC = () => {
-  const [input, setInput] = useState('');
-  const [messages, setMessages] = useState<string[]>([]);
-
-  const handleSend = () => {
-    if (input.trim() === '') return;
-    setMessages([...messages, input]);
-    setInput('');
-  };
-
+function App() {
   return (
-    <div className="main-container">
-      {/* 2Dモデル表示領域 */}
-      <div className="model-area">
-        {/* ここに2Dモデル（画像やCanvasなど）を表示 */}
-        <div className="model-placeholder">2Dモデル表示領域</div>
+    <ChatProvider>
+      <div className="min-h-screen bg-gradient-to-b from-purple-50 to-pink-50 flex flex-col">
+        <Header />
+        <main className="flex-1 flex flex-col items-center justify-between p-4 max-w-3xl mx-auto w-full">
+          <Character />
+          <ChatContainer />
+          <InputSection />
+        </main>
       </div>
-
-      {/* チャット・リアクション領域 */}
-      <div className="chat-area">
-        <div className="messages">
-          {messages.map((msg, idx) => (
-            <div key={idx} className="message">{msg}</div>
-          ))}
-        </div>
-        <div className="input-area">
-          <input
-            type="text"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            placeholder="メッセージを入力..."
-          />
-          <button onClick={handleSend}>送信</button>
-        </div>
-      </div>
-    </div>
+    </ChatProvider>
   );
-};
+}
 
 export default App;
