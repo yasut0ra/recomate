@@ -25,21 +25,6 @@ import asyncio
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
-app = FastAPI(lifespan=lifespan)
-
-# CORSの設定
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Viteのデフォルトポート
-        "http://localhost:3000",  # 開発用ポート
-        "http://localhost:8000",  # FastAPIサーバー
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # VTuberAIのインスタンス
 vtuber = None
 
@@ -56,6 +41,22 @@ async def lifespan(app: FastAPI):
         if vtuber:
             vtuber.cleanup()
             print("VTuberAI cleaned up")
+
+# FastAPIアプリケーションの作成
+app = FastAPI(lifespan=lifespan)
+
+# CORSの設定
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Viteのデフォルトポート
+        "http://localhost:3000",  # 開発用ポート
+        "http://localhost:8000",  # FastAPIサーバー
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class TextInput(BaseModel):
     text: str
