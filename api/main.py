@@ -34,6 +34,8 @@ async def lifespan(app: FastAPI):
     global vtuber
     try:
         vtuber = VtuberAI()
+        # 初期化を待機
+        await asyncio.sleep(2)  # 初期化の完了を待つ
         print("VTuberAI initialized successfully")
         yield
     finally:
@@ -143,33 +145,34 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close()
 
 class VtuberAI:
-    def __init__(self):
+    def __init__(self, enable_tts=True):
         load_dotenv()
         openai.api_key = os.getenv('OPENAI_API_KEY')
-        print("利用可能なオーディオデバイス:")
-        print(sd.query_devices())
-        self.setup_audio()
-        self.setup_speech_recognition()
         
-        # 音声合成の初期化
-        self.tts = TextToSpeech()
-        
-        # 3Dモデルの初期化
-        self.model = VtuberModel()
+        # 音声合成の初期化（オプション）
+        self.tts = None
+        if enable_tts:
+            try:
+                self.tts = TextToSpeech()
+            except Exception as e:
+                print(f"警告: 音声合成の初期化に失敗しました: {str(e)}")
         
         # 会話履歴の初期化
         self.conversation_history = []
         
-        # スレッドの制御用フラグ
-        self.is_running = True
+        # 感情分析の初期化
+        self.emotion_analyzer = EmotionAnalyzer()
+        self.emotion_history = []
         
-        # 音声認識スレッド
-        self.recognition_thread = threading.Thread(target=self._recognition_loop)
-        self.recognition_thread.daemon = True
+        # トピックの定義
+        self.TOPICS = [
+            "趣味", "食べ物", "旅行", "音楽", "映画",
+            "スポーツ", "テクノロジー", "ファッション", "ゲーム", "読書"
+        ]
         
-        # アニメーションスレッド
-        self.animation_thread = threading.Thread(target=self._animation_loop)
-        self.animation_thread.daemon = True
+        # バンディットアルゴリズムの初期化
+        self.bandit = TopicBandit(self.TOPICS)
+        self.current_topic = None
         
         # 応答パターン
         self.response_patterns = {
@@ -207,27 +210,9 @@ class VtuberAI:
             }
         }
 
-        # トピックの定義
-        self.TOPICS = [
-            "趣味",
-            "食べ物",
-            "旅行",
-            "音楽",
-            "映画",
-            "スポーツ",
-            "テクノロジー",
-            "ファッション",
-            "ゲーム",
-            "読書"
-        ]
-
-        # バンディットアルゴリズムの初期化
-        self.bandit = TopicBandit(self.TOPICS)
-        self.current_topic = None
-
-        # 感情分析の初期化
-        self.emotion_analyzer = EmotionAnalyzer()
-        self.emotion_history = []
+    def cleanup(self):
+        """リソースの解放"""
+        pass  # 必要なクリーンアップ処理があれば追加
 
     def setup_audio(self):
         try:
@@ -443,17 +428,6 @@ class VtuberAI:
                             self.is_running = False
         finally:
             self.cleanup()
-
-    def cleanup(self):
-        self.stop_listening()
-        if self.audio_stream is not None:
-            try:
-                self.audio_stream.stop()
-                self.audio_stream.close()
-            except Exception as e:
-                print(f"オーディオストリームのクリーンアップエラー: {e}")
-        
-        print("クリーンアップ完了")
 
     def record_audio(self):
         """音声を録音してキューに追加"""

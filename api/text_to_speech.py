@@ -5,6 +5,7 @@ import pygame
 import hashlib
 import tempfile
 from pathlib import Path
+import time
 
 class TextToSpeech:
     def __init__(self, voice_id=1, cache_dir="voice_cache"):
@@ -27,15 +28,27 @@ class TextToSpeech:
 
     def _check_voicevox_status(self):
         """VOICEVOXの状態を確認"""
-        try:
-            response = requests.get(f"{self.base_url}/version")
-            if response.status_code == 200:
-                version = response.text  # バージョンは直接テキストとして返される
-                print(f"VOICEVOX version: {version}")
-            else:
-                raise Exception("VOICEVOXサーバーが応答しません")
-        except requests.exceptions.ConnectionError:
-            raise Exception("VOICEVOXサーバーに接続できません。VOICEVOXが起動しているか確認してください。")
+        max_retries = 5
+        retry_delay = 2  # 秒
+        
+        for i in range(max_retries):
+            try:
+                response = requests.get(f"{self.base_url}/version")
+                if response.status_code == 200:
+                    version = response.text
+                    print(f"VOICEVOX version: {version}")
+                    return
+                else:
+                    print(f"VOICEVOXサーバーが応答しません（試行 {i+1}/{max_retries}）")
+            except requests.exceptions.ConnectionError:
+                print(f"VOICEVOXサーバーに接続できません（試行 {i+1}/{max_retries}）")
+            
+            if i < max_retries - 1:
+                print(f"{retry_delay}秒後に再試行します...")
+                time.sleep(retry_delay)
+        
+        print("警告: VOICEVOXサーバーに接続できません。音声合成機能は使用できません。")
+        # エラーを発生させずに続行
 
     def _get_cache_path(self, text):
         """テキストに対応するキャッシュファイルのパスを取得"""
