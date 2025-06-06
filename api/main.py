@@ -235,24 +235,33 @@ class VtuberAI:
         self.audio_queue = queue.Queue()
         self.is_listening = False
         
-    def text_to_speech(self, text):
+    def speak(self, text):
         """テキストを音声に変換して再生"""
         try:
-            # 音声パラメータを設定（必要に応じて調整可能）
-            self.tts.set_voice_parameters(
-                speed_scale=1.0,      # 話速
-                volume_scale=1.0,     # 音量
-                pre_phoneme_length=0.1,  # 音の前の無音時間
-                post_phoneme_length=0.1  # 音の後の無音時間
-            )
+            # 音声合成が有効な場合のみ音声を生成
+            if self.tts:
+                self.tts.speak(text)
+            else:
+                print(f"音声合成が無効なため、テキストのみを表示: {text}")
             
-            # 音声を生成して再生
-            self.tts.speak(text)
+            # 会話履歴に追加
+            self.conversation_history.append({"role": "assistant", "content": text})
+            
+            # 感情分析
+            emotion = self.emotion_analyzer.analyze(text)
+            self.emotion_history.append(emotion)
+            
+            return {
+                "text": text,
+                "emotion": emotion
+            }
             
         except Exception as e:
             print(f"音声生成でエラーが発生: {str(e)}")
-            # エラーが発生しても会話は継続
-            pass
+            return {
+                "text": text,
+                "emotion": "neutral"
+            }
         
     def start_listening(self):
         if not self.is_listening:
