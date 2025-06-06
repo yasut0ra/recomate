@@ -23,8 +23,9 @@ import json
 from typing import List, Dict, Any
 import asyncio
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 # CORSの設定
 app.add_middleware(
@@ -42,21 +43,25 @@ app.add_middleware(
 # VTuberAIのインスタンス
 vtuber = None
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 起動時の処理
+    global vtuber
+    try:
+        vtuber = VtuberAI()
+        print("VTuberAI initialized successfully")
+        yield
+    finally:
+        # 終了時の処理
+        if vtuber:
+            vtuber.cleanup()
+            print("VTuberAI cleaned up")
+
 class TextInput(BaseModel):
     text: str
 
 class AudioInput(BaseModel):
     audio_data: List[float]
-
-@app.on_event("startup")
-async def startup_event():
-    global vtuber
-    vtuber = VtuberAI()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    if vtuber:
-        vtuber.cleanup()
 
 @app.get("/")
 async def root():
@@ -64,10 +69,15 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    if vtuber is None:
+        raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
+    return {"status": "healthy", "vtuber_status": "initialized"}
 
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
+    if vtuber is None:
+        raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
+    
     try:
         # 感情分析
         emotion = vtuber._analyze_emotion(input_data.text)
@@ -75,46 +85,60 @@ async def chat(input_data: TextInput):
         # 応答生成
         response = vtuber._generate_response(input_data.text, emotion)
         
-        # 音声合成（オプション）
-        # vtuber.text_to_speech(response)
-        
         return {
             "response": response,
             "emotion": emotion,
             "conversation_history": vtuber.conversation_history
         }
     except Exception as e:
+        print(f"Error in chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/analyze-emotion")
 async def analyze_emotion(input_data: TextInput):
+    if vtuber is None:
+        raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
+    
     try:
         emotion = vtuber._analyze_emotion(input_data.text)
         return {"emotion": emotion}
     except Exception as e:
+        print(f"Error in analyze-emotion endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
+    if vtuber is None:
+        await websocket.close(code=1008, reason="VTuberAI is not initialized")
+        return
+
     await websocket.accept()
     try:
         while True:
             data = await websocket.receive_text()
             input_data = json.loads(data)
             
-            # 感情分析
-            emotion = vtuber._analyze_emotion(input_data["text"])
-            
-            # 応答生成
-            response = vtuber._generate_response(input_data["text"], emotion)
-            
-            # レスポンスを送信
-            await websocket.send_json({
-                "response": response,
-                "emotion": emotion,
-                "conversation_history": vtuber.conversation_history
-            })
+            try:
+                # 感情分析
+                emotion = vtuber._analyze_emotion(input_data["text"])
+                
+                # 応答生成
+                response = vtuber._generate_response(input_data["text"], emotion)
+                
+                # レスポンスを送信
+                await websocket.send_json({
+                    "response": response,
+                    "emotion": emotion,
+                    "conversation_history": vtuber.conversation_history
+                })
+            except Exception as e:
+                print(f"Error in websocket chat: {str(e)}")
+                await websocket.send_json({
+                    "error": str(e)
+                })
     except Exception as e:
+        print(f"WebSocket error: {str(e)}")
+    finally:
         await websocket.close()
 
 class VtuberAI:
