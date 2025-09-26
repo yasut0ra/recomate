@@ -1,17 +1,22 @@
 import numpy as np
-import openai
 import os
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
+from openai import OpenAI
 import time
 
 class TopicBandit:
-    def __init__(self, topics: List[str], alpha: float = 0.1):
+    def __init__(self, topics: List[str], alpha: float = 0.1, client: Optional[OpenAI] = None):
         self.topics = topics
         self.n_topics = len(topics)
         self.alpha = alpha
         self.values = np.zeros(self.n_topics)
         self.counts = np.zeros(self.n_topics)
         self.conversation_history: List[Dict] = []
+        self.client = client or OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+    def set_client(self, client: OpenAI):
+        """Update the OpenAI client instance used for bandit decisions."""
+        self.client = client
         
     def select_topic(self, epsilon: float = 0.1, context: str = "") -> Tuple[int, str]:
         """コンテキストを考慮したトピック選択"""
@@ -26,6 +31,8 @@ class TopicBandit:
     def _explore_with_llm(self, context: str) -> Tuple[int, str]:
         """LLMを使用して関連トピックを探索"""
         try:
+            if self.client is None:
+                raise RuntimeError('OpenAI client is not configured')
             prompt = f"""
             以下の会話の文脈を考慮して、最も適切なトピックを選択してください。
             利用可能なトピック: {', '.join(self.topics)}
@@ -35,15 +42,15 @@ class TopicBandit:
             最も適切なトピックを1つだけ選んでください。
             """
             
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "あなたは会話の文脈に基づいて最適なトピックを選択するアシスタントです。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
-            selected_topic = response.choices[0].message.content.strip()
+
+            selected_topic = (response.choices[0].message.content or '').strip()
             topic_idx = self.topics.index(selected_topic)
             return topic_idx, selected_topic
             
@@ -56,6 +63,8 @@ class TopicBandit:
     def evaluate_response(self, response: str, user_input: str) -> float:
         """LLMを使用して応答の質を評価"""
         try:
+            if self.client is None:
+                raise RuntimeError('OpenAI client is not configured')
             prompt = f"""
             以下の会話の応答を評価してください：
             
@@ -77,16 +86,15 @@ class TopicBandit:
             総合評価: 0.8
             """
             
-            evaluation = openai.ChatCompletion.create(
+            evaluation = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "あなたは会話の質を評価する専門家です。各基準の評価と総合評価を返してください。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
-            # 評価結果から数値のみを抽出
-            score_text = evaluation.choices[0].message.content.strip()
+
+            score_text = (evaluation.choices[0].message.content or '').strip()
             print("\n評価結果:")
             print(score_text)
             
@@ -115,6 +123,8 @@ class TopicBandit:
     def generate_subtopics(self, main_topic: str) -> List[str]:
         """メイントピックに関連するサブトピックを生成"""
         try:
+            if self.client is None:
+                raise RuntimeError('OpenAI client is not configured')
             prompt = f"""
             「{main_topic}」に関連する、具体的な会話のトピックを5つ生成してください。
             各トピックは具体的で、会話を発展させやすいものにしてください。
@@ -125,15 +135,15 @@ class TopicBandit:
             ...
             """
             
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "あなたは会話のトピックを生成する専門家です。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
-            subtopics = response.choices[0].message.content.strip().split('\n')
+
+            subtopics = (response.choices[0].message.content or '').strip().split('\n')
             return [topic.split('. ')[1] for topic in subtopics if '. ' in topic]
             
         except Exception as e:
