@@ -48,13 +48,25 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # CORSの設定
+default_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:4173",   # Vite preview
+    "http://127.0.0.1:4173",
+]
+
+environment_origins = os.getenv("ALLOW_ORIGINS")
+if environment_origins:
+    allowed_origins = [origin.strip() for origin in environment_origins.split(",") if origin.strip()]
+else:
+    allowed_origins = default_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Viteのデフォルトポート
-        "http://localhost:3000",  # 開発用ポート
-        "http://localhost:8000",  # FastAPIサーバー
-    ],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
