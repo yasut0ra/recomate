@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Volume2, Key, User } from 'lucide-react';
 import { useChatContext } from '../context/ChatContext';
+import type { CharacterModel } from '../types';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -11,6 +12,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const [voiceType, setVoiceType] = useState('default');
   const [apiKey, setApiKey] = useState('');
   const [voicevoxUrl, setVoicevoxUrl] = useState('http://localhost:50021');
+  const characterOptions: CharacterModel[] = ['anime-girl', 'anime-boy'];
   
   return (
     <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50 animate-fade-in">
@@ -34,7 +36,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               <h3 className="text-lg font-semibold text-purple-700">Character Settings</h3>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              {['anime-girl', 'anime-boy'].map((model) => (
+              {characterOptions.map((model) => (
                 <button
                   key={model}
                   className={`p-3 rounded-lg border-2 transition-all ${
