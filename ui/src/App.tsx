@@ -1,4 +1,3 @@
-import React from 'react';
 import Header from './components/Header';
 import Character from './components/Character';
 import ChatContainer from './components/ChatContainer';

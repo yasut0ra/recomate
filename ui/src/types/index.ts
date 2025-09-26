@@ -1,18 +1,38 @@
-// Message types
-export interface Message {
-    id: string;
-    text: string;
-    isUser: boolean;
-    timestamp: Date;
-  }
-  
-  // Character emotion types
-  export type CharacterEmotion = 'happy' | 'thinking' | 'surprised' | 'sad';
-  
-  // Settings types
-  export interface Settings {
-    voiceEnabled: boolean;
-    voiceVolume: number;
-    characterModel: string;
-    themeColor: string;
-  }
+export type CharacterEmotion = 'happy' | 'thinking' | 'surprised' | 'sad' | 'neutral';
+
+export type CharacterModel = 'anime-girl' | 'anime-boy';
+
+export type MessageSender = 'user' | 'assistant';
+
+export interface ChatMessage {
+  id: string;
+  sender: MessageSender;
+  text: string;
+  timestamp: string;
+  emotion?: CharacterEmotion;
+}
+
+export type ConversationHistoryEntry =
+  | [string, string]
+  | {
+      user_input?: string;
+      response?: string;
+      text?: string;
+      role?: MessageSender;
+      content?: string;
+      emotion?: string | { primary_emotions?: string[] };
+      timestamp?: number | string;
+    };
+
+export interface ChatApiResponse {
+  response: string;
+  emotion?: string | { primary_emotions?: string[] };
+  conversation_history?: ConversationHistoryEntry[];
+}
+
+export interface TopicStat {
+  topic: string;
+  count: number;
+  avgReward: number;
+  expectedReward: number;
+}
