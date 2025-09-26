@@ -91,7 +91,7 @@ async def chat(input_data: TextInput):
         return {
             "response": response,
             "emotion": emotion,
-            "conversation_history": vtuber.conversation_history
+            "conversation_history": vtuber.get_serialised_history()
         }
     except Exception as e:
         print(f"Error in chat endpoint: {str(e)}")
@@ -132,7 +132,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "response": response,
                     "emotion": emotion,
-                    "conversation_history": vtuber.conversation_history
+                    "conversation_history": vtuber.get_serialised_history()
                 })
             except Exception as e:
                 print(f"Error in websocket chat: {str(e)}")
@@ -209,6 +209,45 @@ class VtuberAI:
                 ]
             }
         }
+    def _append_conversation_entry(self, user_input, response, emotion_data=None):
+        try:
+            entry = {
+                'user_input': user_input,
+                'response': response,
+                'emotion': emotion_data,
+                'timestamp': time.time(),
+            }
+        except Exception:
+            entry = {'user_input': user_input, 'response': response}
+        self.conversation_history.append(entry)
+        if len(self.conversation_history) > 50:
+            self.conversation_history = self.conversation_history[-50:]
+
+    def get_serialised_history(self):
+        history = []
+        for item in self.conversation_history[-50:]:
+            if isinstance(item, dict):
+                if 'user_input' in item and 'response' in item:
+                    history.append({
+                        'user_input': item.get('user_input'),
+                        'response': item.get('response'),
+                        'emotion': item.get('emotion'),
+                        'timestamp': item.get('timestamp'),
+                    })
+                elif item.get('role') and item.get('content'):
+                    history.append({
+                        'role': item.get('role'),
+                        'content': item.get('content'),
+                        'timestamp': item.get('timestamp'),
+                    })
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                history.append({
+                    'user_input': item[0],
+                    'response': item[1],
+                })
+        return history
+
+
 
     def cleanup(self):
         """リソースの解放"""
@@ -392,6 +431,8 @@ class VtuberAI:
             emotion_expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
             self.model.update_expression(emotion_expression)
             
+            self._append_conversation_entry(text, response_text, emotion_data)
+            
             return response_text
             
         except Exception as e:
@@ -521,6 +562,8 @@ class VtuberAI:
             
             # 感情表現を適用
             self.model.update_expression(emotion_expression)
+            
+            self._append_conversation_entry(user_input, response_text, emotion_data)
             
             return response_text
             
