@@ -12,19 +12,22 @@ export interface ChatMessage {
   emotion?: CharacterEmotion;
 }
 
+export type ConversationHistoryEntry =
+  | [string, string]
+  | {
+      user_input?: string;
+      response?: string;
+      text?: string;
+      role?: MessageSender;
+      content?: string;
+      emotion?: string | { primary_emotions?: string[] };
+      timestamp?: number | string;
+    };
+
 export interface ChatApiResponse {
   response: string;
   emotion?: string | { primary_emotions?: string[] };
-  conversation_history?: Array<
-    | [string, string]
-    | {
-        user_input?: string;
-        response?: string;
-        text?: string;
-        role?: MessageSender;
-        content?: string;
-      }
-  >;
+  conversation_history?: ConversationHistoryEntry[];
 }
 
 export interface TopicStat {
