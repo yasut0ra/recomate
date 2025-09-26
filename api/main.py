@@ -57,6 +57,34 @@ except Exception as exc:
 from emotion_analyzer import EmotionAnalyzer
 from topic_bandit import TopicBandit
 
+class _NullVtuberModel:
+    """Fallback avatar when graphical dependencies are unavailable."""
+
+    def update(self, *args, **kwargs):
+        return None
+
+    def update_expression(self, *args, **kwargs):
+        return None
+
+    def render(self, *args, **kwargs):
+        return None
+
+    def process_audio(self, *args, **kwargs):
+        return None
+
+
+def _report_optional_imports_once() -> None:
+    global _OPTIONAL_IMPORTS_REPORTED
+    if _OPTIONAL_IMPORTS_REPORTED:
+        return
+    if not OPTIONAL_IMPORT_ERRORS:
+        _OPTIONAL_IMPORTS_REPORTED = True
+        return
+    for name, exc in OPTIONAL_IMPORT_ERRORS:
+        logger.warning("Optional dependency %s is unavailable (%s)", name, exc)
+    _OPTIONAL_IMPORTS_REPORTED = True
+
+
 # VTuberAIのインスタンス
 vtuber = None
 
@@ -197,9 +225,25 @@ async def websocket_endpoint(websocket: WebSocket):
 class VtuberAI:
     def __init__(self, enable_tts: Optional[bool] = None):
         load_dotenv()
+        _report_optional_imports_once()
+
         self._default_api_key = os.getenv('OPENAI_API_KEY')
         self.api_key = self._default_api_key
-        self.openai_client = self._create_client(self.api_key)
+        if not self._default_api_key:
+            logger.info('OPENAI_API_KEY not found; awaiting runtime API key input')
+        try:
+            self.openai_client = self._create_client(self.api_key)
+        except Exception as exc:
+            logger.error('Failed to initialise OpenAI client: %s', exc)
+            raise
+
+        self.model = self._initialise_model()
+
+        self.is_running = True
+        self.audio_stream = None
+        self.sample_rate = 16000
+        self.recognition_thread = None
+        self.animation_thread = None
 
         # 音声合成の初期化（オプション）
         self.tts = None
@@ -207,22 +251,39 @@ class VtuberAI:
             enable_tts = os.getenv('ENABLE_TTS', 'false').lower() in {'1', 'true', 'yes', 'on'}
 
         if enable_tts:
+            if TextToSpeech is None:
+                logger.warning('Text-to-speech dependency is unavailable; disabling TTS')
+            else:
+                try:
+                    self.tts = TextToSpeech()
+                except Exception as exc:
+                    logger.warning('Text-to-speech initialisation failed: %s', exc)
+
+        if sr is not None:
             try:
-                self.tts = TextToSpeech()
-            except Exception as e:
-                print(f"警告: 音声合成の初期化に失敗しました: {str(e)}")
-        
+                self.setup_speech_recognition()
+            except Exception as exc:
+                logger.warning('Speech recognition initialisation failed: %s', exc)
+                self.recognition_thread = None
+        else:
+            self.recognizer = None
+            self.audio_queue = queue.Queue()
+            self.is_listening = False
+
+        if pygame is not None and not isinstance(self.model, _NullVtuberModel):
+            self.animation_thread = threading.Thread(target=self._animation_loop, daemon=True)
+
         # 会話履歴の初期化
         self.conversation_history = []
-        
+
         # 感情分析の初期化
         self.emotion_analyzer = EmotionAnalyzer(client=self.openai_client)
         self.emotion_history = []
-        
+
         # トピックの定義
         self.TOPICS = [
-            "趣味", "食べ物", "旅行", "音楽", "映画",
-            "スポーツ", "テクノロジー", "ファッション", "ゲーム", "読書"
+            '趣味', '食べ物', '旅行', '音楽', '映画',
+            'スポーツ', 'テクノロジー', 'ファッション', 'ゲーム', '読書'
         ]
 
         # バンディットアルゴリズムの初期化
@@ -232,53 +293,80 @@ class VtuberAI:
         # 応答パターン
         self.response_patterns = {
             'greeting': [
-                "こんにちは！元気ですか？",
-                "やあ！今日はどう？",
-                "こんにちは！お話ししましょう！"
+                'こんにちは！元気ですか？',
+                'やあ！今日はどう？',
+                'こんにちは！お話ししましょう！'
             ],
             'question': [
-                "そうなんだ！もっと詳しく教えて！",
-                "なるほど！それでどう思ったの？",
-                "面白いね！他にも何かある？"
+                'そうなんだ！もっと詳しく教えて！',
+                'なるほど！それでどう思ったの？',
+                '面白いね！他にも何かある？'
             ],
             'emotion': {
                 'happy': [
-                    "私も嬉しい気持ちになります！",
-                    "楽しい話を聞けて嬉しいです！",
-                    "その気持ち、よく分かります！"
+                    '私も嬉しい気持ちになります！',
+                    '楽しい話を聞けて嬉しいです！',
+                    'その気持ち、よく分かります！'
                 ],
                 'sad': [
-                    "大丈夫？私も力になりたいです。",
-                    "辛い気持ち、分かります。",
-                    "一緒に考えましょう。"
+                    '大丈夫？私も力になりたいです。',
+                    '辛い気持ち、分かります。',
+                    '一緒に考えましょう。'
                 ],
                 'angry': [
-                    "落ち着いて、深呼吸してみましょう。",
-                    "その気持ち、分かります。",
-                    "一緒に解決策を考えましょう。"
+                    '落ち着いて、深呼吸してみましょう。',
+                    'その気持ち、分かります。',
+                    '一緒に解決策を考えましょう。'
                 ],
                 'surprised': [
-                    "本当にびっくりしました！",
-                    "驚きの出来事ですね！",
-                    "それは意外でした！"
+                    '本当にびっくりしました！',
+                    '驚きの出来事ですね！',
+                    'それは意外でした！'
                 ]
             }
         }
+
+    def _initialise_model(self):
+        if VtuberModel is None:
+            logger.info('VtuberModel dependency not available; using null model')
+            return _NullVtuberModel()
+        try:
+            return VtuberModel()
+        except Exception as exc:
+            logger.warning('Failed to initialise VtuberModel: %s', exc)
+            return _NullVtuberModel()
 
     def _create_client(self, api_key: Optional[str]) -> OpenAI:
         if api_key:
             return OpenAI(api_key=api_key)
         return OpenAI()
 
+    @staticmethod
+    def _mask_key(value: Optional[str]) -> str:
+        if not value:
+            return '(empty)'
+        if len(value) <= 6:
+            return value[0] + '...' + value[-1]
+        return value[:3] + '...' + value[-3:]
+
     def update_api_key(self, api_key: Optional[str]):
         new_key = api_key or self._default_api_key
+        if not new_key:
+            logger.warning('OpenAI API key is empty; authentication may fail')
         if new_key == self.api_key and self.openai_client is not None:
             return
 
         self.api_key = new_key
-        self.openai_client = self._create_client(self.api_key)
+        try:
+            self.openai_client = self._create_client(self.api_key)
+        except Exception as exc:
+            logger.error('Failed to refresh OpenAI client: %s', exc)
+            raise
+
         self.emotion_analyzer.set_client(self.openai_client)
         self.bandit.set_client(self.openai_client)
+        origin = 'UI override' if api_key else 'environment'
+        logger.info('OpenAI API key updated (%s, %s)', origin, self._mask_key(self.api_key))
 
     def _append_conversation_entry(self, user_input, response, emotion_data=None):
         try:
@@ -325,9 +413,12 @@ class VtuberAI:
         pass  # 必要なクリーンアップ処理があれば追加
 
     def setup_audio(self):
+        if sd is None:
+            logger.info('sounddevice dependency is unavailable; skipping audio setup')
+            return
         try:
             default_device = sd.query_devices(kind='input')
-            print(f"デフォルトの入力デバイス: {default_device['name']}")
+            logger.info('Using audio input device: %s', default_device['name'])
             self.sample_rate = int(default_device['default_samplerate'])
             self.audio_stream = sd.InputStream(
                 device=default_device['index'],
@@ -336,8 +427,8 @@ class VtuberAI:
                 blocksize=1024
             )
             self.audio_stream.start()
-        except Exception as e:
-            print(f"オーディオデバイスの初期化エラー: {e}")
+        except Exception as exc:
+            logger.warning('Audio device initialisation failed: %s', exc)
             self.audio_stream = None
             
     def setup_speech_recognition(self):
@@ -348,77 +439,79 @@ class VtuberAI:
     def speak(self, text):
         """テキストを音声に変換して再生"""
         try:
-            # 音声合成が有効な場合のみ音声を生成
             if self.tts:
                 self.tts.speak(text)
             else:
-                print(f"音声合成が無効なため、テキストのみを表示: {text}")
-            
-            # 会話履歴に追加
+                logger.debug('TTS disabled; text response: %s', text)
+
             self.conversation_history.append({"role": "assistant", "content": text})
-            
-            # 感情分析
+
             emotion = self.emotion_analyzer.analyze(text)
             self.emotion_history.append(emotion)
-            
+
             return {
                 "text": text,
                 "emotion": emotion
             }
-            
-        except Exception as e:
-            print(f"音声生成でエラーが発生: {str(e)}")
+        except Exception as exc:
+            logger.warning('Text-to-speech failed: %s', exc)
             return {
                 "text": text,
                 "emotion": "neutral"
             }
         
     def start_listening(self):
-        if not self.is_listening:
-            self.is_listening = True
-            self.recognition_thread.start()
-            print("音声認識を開始しました。話しかけてください。")
-            
-    def stop_listening(self):
+        if sr is None or getattr(self, 'recognizer', None) is None:
+            logger.warning('Speech recognition is not available; cannot start listening')
+            return
         if self.is_listening:
-            self.is_listening = False
-            if self.recognition_thread:
-                self.recognition_thread.join()
-            print("音声認識を停止しました。")
+            return
+        self.is_listening = True
+        self.is_running = True
+        if self.recognition_thread is None or not self.recognition_thread.is_alive():
+            self.recognition_thread = threading.Thread(target=self._recognition_loop, daemon=True)
+            self.recognition_thread.start()
+            logger.info('Speech recognition started')
+
+    def stop_listening(self):
+        if not self.is_listening:
+            return
+        self.is_listening = False
+        if self.recognition_thread and self.recognition_thread.is_alive():
+            self.is_running = False
+            self.recognition_thread.join(timeout=2)
+            logger.info('Speech recognition stopped')
             
     def _recognition_loop(self):
         """音声認識ループ"""
         while self.is_running:
             try:
                 with sr.Microphone() as source:
-                    print("聞き取り中...")
+                    logger.debug('Listening for audio input')
                     audio = self.recognizer.listen(source)
-                    
+
                     try:
                         text = self.recognizer.recognize_google(audio, language='ja-JP')
-                        print(f"認識結果: {text}")
-                        
-                        # 感情を分析
+                        logger.debug('Speech recognised: %s', text)
+
                         emotion = self._analyze_emotion(text)
                         self.model.update(emotion=emotion, is_speaking=True)
-                        
-                        # 応答を生成
+
                         response = self._generate_response(text, emotion)
-                        print(f"応答: {response}")
-                        
-                        # 音声合成
-                        self.tts.speak(response)
-                        
-                        # 会話履歴に追加
+                        logger.debug('Generated response: %s', response)
+
+                        if self.tts:
+                            self.tts.speak(response)
+
                         self.conversation_history.append((text, response))
-                        
+
                     except sr.UnknownValueError:
-                        print("音声を認識できませんでした")
-                    except sr.RequestError as e:
-                        print(f"音声認識サービスでエラーが発生しました: {e}")
-                    
-            except Exception as e:
-                print(f"エラーが発生しました: {e}")
+                        logger.debug('Speech could not be recognised')
+                    except sr.RequestError as exc:
+                        logger.warning('Speech recognition service error: %s', exc)
+
+            except Exception as exc:
+                logger.warning('Speech recognition loop error: %s', exc)
                 time.sleep(1)
 
     def _animation_loop(self):
@@ -528,28 +621,31 @@ class VtuberAI:
 
     def start(self):
         """Vtuber AIを開始"""
-        print("Vtuber AIを開始します...")
-        
-        # スレッドを開始
-        self.recognition_thread.start()
-        self.animation_thread.start()
-        
-        # メインループ
+        logger.info('Starting Vtuber AI loop')
+        self.is_running = True
+
+        if sr is not None:
+            self.start_listening()
+
+        if pygame is None or isinstance(self.model, _NullVtuberModel):
+            logger.info('Rendering dependencies unavailable; skipping animation loop')
+            return
+
+        if self.animation_thread is None or not self.animation_thread.is_alive():
+            self.animation_thread = threading.Thread(target=self._animation_loop, daemon=True)
+            self.animation_thread.start()
+
         try:
             while self.is_running:
-                # モデルの描画
                 self.model.render()
-                
-                # イベント処理
+
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         self.is_running = False
-                    elif event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_ESCAPE:
-                            self.is_running = False
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self.is_running = False
         finally:
             self.cleanup()
-
     def record_audio(self):
         """音声を録音してキューに追加"""
         def audio_callback(indata, frames, time, status):
