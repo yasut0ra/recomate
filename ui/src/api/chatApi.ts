@@ -8,19 +8,28 @@ const resolveBaseUrl = () => {
   if (!trimmed) {
     return DEFAULT_BASE_URL;
   }
-  return trimmed.replace(/\/$/, '');
+  return trimmed.replace(/\/\$/, '');
 };
 
-export const postChatMessage = async (message: string): Promise<ChatApiResponse> => {
+interface PostChatOptions {
+  apiKey?: string | null;
+}
+
+export const postChatMessage = async (message: string, options?: PostChatOptions): Promise<ChatApiResponse> => {
   const baseUrl = resolveBaseUrl();
   const endpoint = baseUrl + '/api/chat';
+
+  const payload: Record<string, unknown> = { text: message };
+  if (options) {
+    payload.api_key = options.apiKey ?? null;
+  }
 
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ text: message }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
