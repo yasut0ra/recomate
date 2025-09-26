@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import asyncio
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -62,6 +62,7 @@ app.add_middleware(
 
 class TextInput(BaseModel):
     text: str
+    api_key: Optional[str] = None
 
 class AudioInput(BaseModel):
     audio_data: List[float]
@@ -82,6 +83,7 @@ async def chat(input_data: TextInput):
         raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
     
     try:
+        vtuber.update_api_key(input_data.api_key)
         # 感情分析
         emotion = vtuber._analyze_emotion(input_data.text)
         
@@ -120,7 +122,11 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             input_data = json.loads(data)
-            
+
+            if 'apiKey' in input_data or 'api_key' in input_data:
+                api_key = input_data.get('apiKey') or input_data.get('api_key')
+                vtuber.update_api_key(api_key)
+
             try:
                 # 感情分析
                 emotion = vtuber._analyze_emotion(input_data["text"])
@@ -148,6 +154,8 @@ class VtuberAI:
     def __init__(self, enable_tts=True):
         load_dotenv()
         openai.api_key = os.getenv('OPENAI_API_KEY')
+        self._default_api_key = openai.api_key
+        self.api_key = self._default_api_key
         
         # 音声合成の初期化（オプション）
         self.tts = None
@@ -209,6 +217,15 @@ class VtuberAI:
                 ]
             }
         }
+
+    def update_api_key(self, api_key: Optional[str]):
+        if api_key:
+            self.api_key = api_key
+            openai.api_key = api_key
+        else:
+            self.api_key = self._default_api_key
+            openai.api_key = self._default_api_key
+
     def _append_conversation_entry(self, user_input, response, emotion_data=None):
         try:
             entry = {
