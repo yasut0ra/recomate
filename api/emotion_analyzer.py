@@ -1,15 +1,20 @@
-import openai
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import numpy as np
 from dotenv import load_dotenv
-import os
+from openai import OpenAI
 
 class EmotionAnalyzer:
-    def __init__(self):
+    def __init__(self, client: Optional[OpenAI] = None):
         # 環境変数の読み込み
         load_dotenv()
-        openai.api_key = os.getenv('OPENAI_API_KEY')
-        
+        self.client = client or OpenAI()
+        self._initialise_metadata()
+
+    def set_client(self, client: OpenAI):
+        """Update the OpenAI client used for emotion-related prompts."""
+        self.client = client
+
+    def _initialise_metadata(self):
         # 基本感情の定義
         self.base_emotions = [
             "喜び", "悲しみ", "怒り", "驚き", "恐れ", "嫌悪", "期待", "信頼"
@@ -49,15 +54,15 @@ class EmotionAnalyzer:
             - 感情の複雑さを捉える
             """
             
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "あなたは感情分析の専門家です。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
-            analysis = response.choices[0].message.content
+
+            analysis = response.choices[0].message.content or ''
             
             # 分析結果を構造化
             return self._parse_analysis(analysis)
@@ -142,15 +147,15 @@ class EmotionAnalyzer:
             4. 感情表現の強さ（0.0-1.0）
             """
             
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "あなたはVTuberの表現を生成する専門家です。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
-            return response.choices[0].message.content
+
+            return response.choices[0].message.content or '通常の表情'
             
         except Exception as e:
             print(f"感情表現の生成でエラーが発生: {e}")

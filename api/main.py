@@ -1,29 +1,61 @@
+import asyncio
+import json
+import logging
 import os
-import pygame
-import sounddevice as sd
-import numpy as np
-from dotenv import load_dotenv
-import openai
-import time
-import speech_recognition as sr
 import queue
-import threading
-from gtts import gTTS
-import tempfile
-from text_to_speech import TextToSpeech
-from vtuber_model import VtuberModel
 import random
+import tempfile
+import threading
+import time
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 import soundfile as sf
-from topic_bandit import TopicBandit
-from emotion_analyzer import EmotionAnalyzer
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import json
-from typing import List, Dict, Any, Optional
-import asyncio
+from openai import OpenAI
 from pydantic import BaseModel
-from contextlib import asynccontextmanager
+import uvicorn
+
+logger = logging.getLogger(__name__)
+
+OPTIONAL_IMPORT_ERRORS: List[Tuple[str, Exception]] = []
+_OPTIONAL_IMPORTS_REPORTED = False
+
+try:
+    import pygame  # type: ignore
+except Exception as exc:
+    pygame = None  # type: ignore[assignment]
+    OPTIONAL_IMPORT_ERRORS.append(("pygame", exc))
+
+try:
+    import sounddevice as sd  # type: ignore
+except Exception as exc:
+    sd = None  # type: ignore[assignment]
+    OPTIONAL_IMPORT_ERRORS.append(("sounddevice", exc))
+
+try:
+    import speech_recognition as sr  # type: ignore
+except Exception as exc:
+    sr = None  # type: ignore[assignment]
+    OPTIONAL_IMPORT_ERRORS.append(("speech_recognition", exc))
+
+try:
+    from text_to_speech import TextToSpeech  # type: ignore
+except Exception as exc:
+    TextToSpeech = None  # type: ignore[assignment]
+    OPTIONAL_IMPORT_ERRORS.append(("text_to_speech", exc))
+
+try:
+    from vtuber_model import VtuberModel  # type: ignore
+except Exception as exc:
+    VtuberModel = None  # type: ignore[assignment]
+    OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
+
+from emotion_analyzer import EmotionAnalyzer
+from topic_bandit import TopicBandit
 
 # VTuberAIのインスタンス
 vtuber = None
@@ -163,14 +195,17 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close()
 
 class VtuberAI:
-    def __init__(self, enable_tts=True):
+    def __init__(self, enable_tts: Optional[bool] = None):
         load_dotenv()
-        openai.api_key = os.getenv('OPENAI_API_KEY')
-        self._default_api_key = openai.api_key
+        self._default_api_key = os.getenv('OPENAI_API_KEY')
         self.api_key = self._default_api_key
-        
+        self.openai_client = self._create_client(self.api_key)
+
         # 音声合成の初期化（オプション）
         self.tts = None
+        if enable_tts is None:
+            enable_tts = os.getenv('ENABLE_TTS', 'false').lower() in {'1', 'true', 'yes', 'on'}
+
         if enable_tts:
             try:
                 self.tts = TextToSpeech()
@@ -181,7 +216,7 @@ class VtuberAI:
         self.conversation_history = []
         
         # 感情分析の初期化
-        self.emotion_analyzer = EmotionAnalyzer()
+        self.emotion_analyzer = EmotionAnalyzer(client=self.openai_client)
         self.emotion_history = []
         
         # トピックの定義
@@ -189,11 +224,11 @@ class VtuberAI:
             "趣味", "食べ物", "旅行", "音楽", "映画",
             "スポーツ", "テクノロジー", "ファッション", "ゲーム", "読書"
         ]
-        
+
         # バンディットアルゴリズムの初期化
-        self.bandit = TopicBandit(self.TOPICS)
+        self.bandit = TopicBandit(self.TOPICS, client=self.openai_client)
         self.current_topic = None
-        
+
         # 応答パターン
         self.response_patterns = {
             'greeting': [
@@ -230,13 +265,20 @@ class VtuberAI:
             }
         }
 
-    def update_api_key(self, api_key: Optional[str]):
+    def _create_client(self, api_key: Optional[str]) -> OpenAI:
         if api_key:
-            self.api_key = api_key
-            openai.api_key = api_key
-        else:
-            self.api_key = self._default_api_key
-            openai.api_key = self._default_api_key
+            return OpenAI(api_key=api_key)
+        return OpenAI()
+
+    def update_api_key(self, api_key: Optional[str]):
+        new_key = api_key or self._default_api_key
+        if new_key == self.api_key and self.openai_client is not None:
+            return
+
+        self.api_key = new_key
+        self.openai_client = self._create_client(self.api_key)
+        self.emotion_analyzer.set_client(self.openai_client)
+        self.bandit.set_client(self.openai_client)
 
     def _append_conversation_entry(self, user_input, response, emotion_data=None):
         try:
@@ -436,15 +478,15 @@ class VtuberAI:
         """
         
         try:
-            response = openai.ChatCompletion.create(
+            response = self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "あなたは親しみやすいVTuberです。応答は「VTuber:」などの余計な文字を含めないでください。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
-            response_text = response.choices[0].message.content.strip()
+
+            response_text = (response.choices[0].message.content or '').strip()
             # 余計な文字を削除
             response_text = response_text.replace("VTuber:", "").strip()
             
@@ -572,15 +614,15 @@ class VtuberAI:
         """
         
         try:
-            response = openai.ChatCompletion.create(
+            response = self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "あなたは親しみやすいVTuberです。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
-            response_text = response.choices[0].message.content
+
+            response_text = response.choices[0].message.content or ''
             
             # 応答の評価
             reward = self.bandit.evaluate_response(response_text, user_input)
