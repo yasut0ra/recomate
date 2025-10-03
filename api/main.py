@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import logging
 import os
@@ -15,8 +16,9 @@ import soundfile as sf
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,13 @@ class TextInput(BaseModel):
 
 class AudioInput(BaseModel):
     audio_data: List[float]
+    sample_rate: int = Field(..., gt=0)
+    api_key: Optional[str] = None
+
+
+class TranscriptionResponse(BaseModel):
+    text: str
+    confidence: Optional[float] = None
 
 @app.get("/")
 async def root():
@@ -154,6 +163,52 @@ async def analyze_emotion(input_data: TextInput):
     except Exception as e:
         print(f"Error in analyze-emotion endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/text-to-speech")
+async def text_to_speech(input_data: TextInput):
+    if vtuber is None:
+        raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
+
+    text = (input_data.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text input is required for TTS")
+
+    try:
+        vtuber.update_api_key(input_data.api_key)
+        audio_bytes = vtuber.synthesize_speech(text)
+        return StreamingResponse(
+            io.BytesIO(audio_bytes),
+            media_type="audio/wav",
+            headers={"Content-Disposition": "inline; filename=tts.wav"},
+        )
+    except RuntimeError as exc:
+        logger.warning("TTS request failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ValueError as exc:
+        logger.warning("Invalid TTS input: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Unexpected error during TTS generation")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.post("/api/transcribe", response_model=TranscriptionResponse)
+async def transcribe_audio(input_data: AudioInput):
+    if vtuber is None:
+        raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
+
+    try:
+        vtuber.update_api_key(input_data.api_key)
+        result = vtuber.transcribe_audio(input_data.audio_data, input_data.sample_rate)
+        return result
+    except ValueError as exc:
+        logger.warning("Invalid audio input: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        logger.warning("Transcription unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Unexpected error during transcription")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
@@ -203,6 +258,13 @@ class VtuberAI:
 
         # 音声合成の初期化（オプション）
         self.tts = None
+        self.model = None
+        self.recognizer = sr.Recognizer() if sr else None
+        self.audio_queue = queue.Queue()
+        self.recognition_thread = None
+        self.animation_thread = None
+        self.is_listening = False
+        self.is_running = False
         if enable_tts is None:
             enable_tts = os.getenv('ENABLE_TTS', 'false').lower() in {'1', 'true', 'yes', 'on'}
 
@@ -358,6 +420,62 @@ class VtuberAI:
                 logger.debug("Failed to update model expression during fallback: %s", exc)
         return response_text
 
+
+
+    def synthesize_speech(self, text: str) -> bytes:
+        if not text:
+            raise ValueError("Text must not be empty")
+        if self.tts is None:
+            raise RuntimeError("Text-to-speech is not enabled")
+
+        return self.tts.synthesise(text)
+
+
+    def transcribe_audio(self, audio_data: List[float], sample_rate: int) -> TranscriptionResponse:
+        if sr is None or self.recognizer is None:
+            raise RuntimeError("Speech recognition is not available")
+        if sample_rate <= 0:
+            raise ValueError("Sample rate must be a positive integer")
+        if not audio_data:
+            raise ValueError("Audio data is empty")
+
+        audio_array = np.array(audio_data, dtype=np.float32)
+        if not np.isfinite(audio_array).all():
+            raise ValueError("Audio data contains invalid values")
+
+        temp_file: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                temp_file = tmp.name
+                sf.write(tmp.name, audio_array, sample_rate, subtype='PCM_16')
+
+            with sr.AudioFile(temp_file) as source:
+                audio = self.recognizer.record(source)
+
+            result = self.recognizer.recognize_google(audio, language='ja-JP', show_all=True)
+            transcript = ''
+            confidence: Optional[float] = None
+
+            if isinstance(result, dict):
+                alternatives = result.get('alternative') or []
+                if alternatives:
+                    primary = alternatives[0]
+                    transcript = primary.get('transcript', '')
+                    confidence = primary.get('confidence')
+            if not transcript:
+                transcript = self.recognizer.recognize_google(audio, language='ja-JP')
+
+            return TranscriptionResponse(text=transcript, confidence=confidence)
+        except sr.UnknownValueError as exc:
+            raise RuntimeError("音声を認識できませんでした") from exc
+        except sr.RequestError as exc:
+            raise RuntimeError(f"音声認識サービスでエラーが発生しました: {exc}") from exc
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except OSError:
+                    logger.debug("Temporary audio file cleanup failed", exc_info=True)
 
 
     def cleanup(self):
