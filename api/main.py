@@ -265,10 +265,17 @@ class VtuberAI:
             }
         }
 
-    def _create_client(self, api_key: Optional[str]) -> OpenAI:
-        if api_key:
+    def _create_client(self, api_key: Optional[str]) -> Optional[OpenAI]:
+        if not api_key:
+            logger.warning("OpenAI API key is not configured; LLM features will remain disabled until a key is provided.")
+            return None
+
+        try:
             return OpenAI(api_key=api_key)
-        return OpenAI()
+        except Exception as exc:
+            logger.error("Failed to initialise OpenAI client: %s", exc)
+            OPTIONAL_IMPORT_ERRORS.append(("openai_client", exc))
+            return None
 
     def update_api_key(self, api_key: Optional[str]):
         new_key = api_key or self._default_api_key
@@ -277,8 +284,12 @@ class VtuberAI:
 
         self.api_key = new_key
         self.openai_client = self._create_client(self.api_key)
-        self.emotion_analyzer.set_client(self.openai_client)
-        self.bandit.set_client(self.openai_client)
+        if self.openai_client is not None:
+            self.emotion_analyzer.set_client(self.openai_client)
+            self.bandit.set_client(self.openai_client)
+        else:
+            self.emotion_analyzer.set_client(None)
+            self.bandit.set_client(None)
 
     def _append_conversation_entry(self, user_input, response, emotion_data=None):
         try:
@@ -317,6 +328,35 @@ class VtuberAI:
                     'response': item[1],
                 })
         return history
+
+    def _fallback_response(self, user_input: str, emotion: str, emotion_data: Optional[Dict] = None, topic: Optional[str] = None) -> str:
+        """LLMが利用できない場合の代替応答を生成"""
+        patterns: List[str] = []
+        if emotion and isinstance(self.response_patterns.get('emotion'), dict):
+            patterns = self.response_patterns['emotion'].get(emotion, [])
+
+        if not patterns:
+            patterns = self.response_patterns.get('question', [])
+
+        if not patterns:
+            patterns = self.response_patterns.get('greeting', [])
+
+        response_text = random.choice(patterns) if patterns else "ごめんなさい、今はうまく応答できません。"
+        self._append_conversation_entry(user_input, response_text, emotion_data)
+        if topic:
+            try:
+                self.bandit.add_to_history(user_input, response_text, topic)
+            except Exception as exc:
+                logger.debug("Failed to record fallback response in bandit history: %s", exc)
+
+        if emotion_data is not None:
+            try:
+                expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
+                if hasattr(self, 'model') and getattr(self, 'model') is not None:
+                    self.model.update_expression(expression)  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.debug("Failed to update model expression during fallback: %s", exc)
+        return response_text
 
 
 
@@ -452,7 +492,7 @@ class VtuberAI:
         
         # サブトピックを生成
         subtopics = self.bandit.generate_subtopics(selected_topic)
-        
+
         # プロンプトの作成
         prompt = f"""
         トピック「{selected_topic}」について、以下のユーザーの発言に対して応答してください。
@@ -476,7 +516,11 @@ class VtuberAI:
         
         応答は「VTuber:」などの余計な文字を含めないでください。
         """
-        
+
+        if self.openai_client is None:
+            logger.warning("VtuberAI: OpenAI client is unavailable; using fallback response.")
+            return self._fallback_response(text, emotion, emotion_data, selected_topic)
+
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -500,15 +544,19 @@ class VtuberAI:
             
             # 感情表現を適用
             emotion_expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
-            self.model.update_expression(emotion_expression)
-            
+            if hasattr(self, 'model') and getattr(self, 'model') is not None:
+                try:
+                    self.model.update_expression(emotion_expression)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    logger.debug("Failed to update model expression: %s", exc)
+
             self._append_conversation_entry(text, response_text, emotion_data)
             
             return response_text
             
         except Exception as e:
-            print(f"エラーが発生しました: {e}")
-            return "すみません、応答を生成できませんでした。"
+            logger.error("LLM response generation failed: %s", e)
+            return self._fallback_response(text, emotion, emotion_data, selected_topic)
 
     def process_audio(self):
         if self.audio_stream is None:
@@ -602,9 +650,9 @@ class VtuberAI:
         
         関連するサブトピック：
         {', '.join(subtopics)}
-        
+
         ユーザーの発言：{user_input}
-        
+
         以下の点に注意して応答してください：
         1. ユーザーの感情状態に共感する
         2. 自然な会話の流れを維持する
@@ -612,7 +660,11 @@ class VtuberAI:
         4. 会話を発展させる質問を含める
         5. サブトピックを自然に取り入れる
         """
-        
+
+        if self.openai_client is None:
+            logger.warning("VtuberAI: OpenAI client is unavailable; using fallback response.")
+            return self._fallback_response(user_input, self._analyze_emotion(user_input), emotion_data, selected_topic)
+
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -632,7 +684,11 @@ class VtuberAI:
             self.bandit.add_to_history(user_input, response_text, selected_topic)
             
             # 感情表現を適用
-            self.model.update_expression(emotion_expression)
+            if hasattr(self, 'model') and getattr(self, 'model') is not None:
+                try:
+                    self.model.update_expression(emotion_expression)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    logger.debug("Failed to update model expression: %s", exc)
             
             self._append_conversation_entry(user_input, response_text, emotion_data)
             
@@ -640,7 +696,8 @@ class VtuberAI:
             
         except Exception as e:
             print(f"エラーが発生しました: {e}")
-            return "すみません、応答を生成できませんでした。"
+            logger.error("LLM response generation failed: %s", e)
+            return self._fallback_response(user_input, self._analyze_emotion(user_input), emotion_data, selected_topic)
     
     def _get_conversation_context(self):
         """最近の会話履歴から文脈を取得"""
