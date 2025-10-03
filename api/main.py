@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi import APIRouter
 from openai import OpenAI
 from pydantic import BaseModel, Field
 import uvicorn
@@ -129,6 +130,18 @@ async def health_check():
     if vtuber is None:
         raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
     return {"status": "healthy", "vtuber_status": "initialized"}
+
+
+@app.get("/api/topics/stats")
+async def topic_stats():
+    if vtuber is None:
+        raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
+
+    try:
+        return vtuber.bandit.get_summary()
+    except Exception as exc:
+        logger.exception("Failed to collect topic stats: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
