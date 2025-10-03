@@ -186,7 +186,7 @@ const normaliseHistory = (
 export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([createInitialAssistantMessage()]);
   const [characterEmotion, setCharacterEmotion] = useState<CharacterEmotion>('happy');
-  const [characterModel, setCharacterModel] = useState<CharacterModel>('anime-girl');
+  const [characterModel, setCharacterModel] = useState<CharacterModel>('rico');
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [apiKey, setApiKeyState] = useState<string | null>(() => {
