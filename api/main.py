@@ -609,12 +609,14 @@ class VtuberAI:
         bandit_features = {
             'context_text': conversation_context,
             'emotion': emotion_data,
+            'user_input': text,
         }
         topic_idx, selected_topic = self.bandit.select_topic(context=conversation_context, features=bandit_features)
         self.current_topic = selected_topic
         
         # サブトピックを生成
         subtopics = self.bandit.generate_subtopics(selected_topic)
+        bandit_features['subtopics'] = subtopics
 
         # プロンプトの作成
         prompt = f"""
@@ -757,14 +759,16 @@ class VtuberAI:
         bandit_features = {
             'context_text': context,
             'emotion': emotion_data,
+            'user_input': user_input,
         }
 
         # トピックを選択
         topic_idx, selected_topic = self.bandit.select_topic(context=context, features=bandit_features)
         self.current_topic = selected_topic
-        
+
         # サブトピックを生成
         subtopics = self.bandit.generate_subtopics(selected_topic)
+        bandit_features['subtopics'] = subtopics
         
         # プロンプトの作成
         prompt = f"""
