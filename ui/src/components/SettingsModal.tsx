@@ -8,7 +8,14 @@ interface SettingsModalProps {
 }
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
-  const { characterModel, setCharacterModel, apiKey, setApiKey } = useChatContext();
+  const {
+    characterModel,
+    setCharacterModel,
+    apiKey,
+    setApiKey,
+    voiceEnabled,
+    setVoiceEnabled,
+  } = useChatContext();
   const [voiceType, setVoiceType] = useState('default');
   const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? '');
   const [voicevoxUrl, setVoicevoxUrl] = useState('http://localhost:50021');
@@ -119,7 +126,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                   id="enable-voice"
                   type="checkbox"
                   className="h-4 w-4 text-purple-600 rounded border-gray-300 focus:ring-purple-500"
-                  defaultChecked
+                  checked={voiceEnabled}
+                  onChange={event => setVoiceEnabled(event.target.checked)}
                 />
                 <label htmlFor="enable-voice" className="ml-2 block text-sm text-gray-700">
                   Enable voice responses
