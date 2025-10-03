@@ -19,7 +19,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const [voiceType, setVoiceType] = useState('default');
   const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? '');
   const [voicevoxUrl, setVoicevoxUrl] = useState('http://localhost:50021');
-  const characterOptions: CharacterModel[] = ['anime-girl', 'anime-boy'];
+  const characterOptions: CharacterModel[] = ['rico', 'hachika'];
 
   useEffect(() => {
     setApiKeyInput(apiKey ?? '');
@@ -67,11 +67,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                   >
                     <div className="aspect-square rounded-full bg-purple-100 mb-2 flex items-center justify-center overflow-hidden">
                       <span className="text-2xl">
-                        {model === 'anime-girl' ? '👧' : '👦'}
+                        {model === 'rico' ? '🌸' : '💙'}
                       </span>
                     </div>
                     <p className="text-sm text-center capitalize">
-                      {model.replace('-', ' ')}
+                      {model}
                     </p>
                   </button>
                 );
