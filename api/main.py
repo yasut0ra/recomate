@@ -43,19 +43,19 @@ except Exception as exc:
     OPTIONAL_IMPORT_ERRORS.append(("speech_recognition", exc))
 
 try:
-    from text_to_speech import TextToSpeech  # type: ignore
+    from .text_to_speech import TextToSpeech  # type: ignore
 except Exception as exc:
     TextToSpeech = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("text_to_speech", exc))
 
 try:
-    from vtuber_model import VtuberModel  # type: ignore
+    from .vtuber_model import VtuberModel  # type: ignore
 except Exception as exc:
     VtuberModel = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
 
-from emotion_analyzer import EmotionAnalyzer
-from topic_bandit import TopicBandit
+from .emotion_analyzer import EmotionAnalyzer
+from .topic_bandit import TopicBandit
 
 # VTuberAIのインスタンス
 vtuber = None
