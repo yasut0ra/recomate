@@ -46,6 +46,8 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+voice_cache/
+*.wav
 
 # IDE
 .idea/
