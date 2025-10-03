@@ -36,3 +36,8 @@ export interface TopicStat {
   avgReward: number;
   expectedReward: number;
 }
+
+export interface TranscriptionResponse {
+  text: string;
+  confidence?: number;
+}

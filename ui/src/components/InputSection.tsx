@@ -1,14 +1,135 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Mic, Send } from 'lucide-react';
 import { useChatContext } from '../context/ChatContext';
+
+const SUPPORTED_MIME_TYPES = [
+  'audio/webm;codecs=opus',
+  'audio/ogg;codecs=opus',
+  'audio/webm',
+];
+
+const chooseMimeType = () => {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return undefined;
+  }
+  return SUPPORTED_MIME_TYPES.find(type => MediaRecorder.isTypeSupported(type));
+};
 
 const InputSection: React.FC = () => {
   const [message, setMessage] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { sendMessage, isProcessing } = useChatContext();
+  const mountedRef = useRef(true);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const {
+    sendMessage,
+    isProcessing,
+    transcribeAudio,
+    isTranscribing,
+  } = useChatContext();
 
-  const handleSendMessage = async () => {
+  const stopStream = useCallback(() => {
+    const stream = mediaStreamRef.current;
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+  }, []);
+
+  const handleRecordingStop = useCallback(async () => {
+    if (mountedRef.current) {
+      setIsRecording(false);
+    }
+    const recorder = mediaRecorderRef.current;
+    mediaRecorderRef.current = null;
+    stopStream();
+
+    if (!chunksRef.current.length) {
+      return;
+    }
+
+    const blob = new Blob(chunksRef.current, { type: recorder?.mimeType || 'audio/webm' });
+    chunksRef.current = [];
+
+    try {
+      const arrayBuffer = await blob.arrayBuffer();
+      let audioContext = audioContextRef.current;
+      if (!audioContext) {
+        audioContext = new AudioContext();
+        audioContextRef.current = audioContext;
+      }
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+      const channelData = audioBuffer.getChannelData(0);
+      const transcript = await transcribeAudio(new Float32Array(channelData), audioBuffer.sampleRate);
+      if (transcript) {
+        setMessage(transcript);
+        inputRef.current?.focus();
+      }
+    } catch (error) {
+      console.error('Failed to process recorded audio', error);
+    }
+  }, [stopStream, transcribeAudio]);
+
+  const startRecording = useCallback(async () => {
+    if (isProcessing || isTranscribing || isRecording) {
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      console.warn('Browser does not support audio recording');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+
+      const mimeType = chooseMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = recorder;
+      chunksRef.current = [];
+
+      recorder.ondataavailable = event => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        void handleRecordingStop();
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      setMessage('');
+    } catch (error) {
+      console.error('Failed to access the microphone', error);
+      stopStream();
+    }
+  }, [handleRecordingStop, isProcessing, isRecording, isTranscribing, stopStream]);
+
+  const stopRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
+    } else {
+      stopStream();
+      setIsRecording(false);
+    }
+  }, [stopStream]);
+
+  const toggleVoiceRecording = useCallback(() => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      void startRecording();
+    }
+  }, [isRecording, startRecording, stopRecording]);
+
+  const handleSendMessage = useCallback(async () => {
     if (!message.trim()) {
       return;
     }
@@ -19,30 +140,32 @@ const InputSection: React.FC = () => {
     } catch (error) {
       console.error('Failed to send message', error);
     }
-  };
+  }, [message, sendMessage]);
 
-  const handleKeyDown = (event: React.KeyboardEvent) => {
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void handleSendMessage();
     }
-  };
+  }, [handleSendMessage]);
 
-  const toggleVoiceRecording = () => {
-    setIsRecording(previous => !previous);
-
-    if (!isRecording) {
-      setTimeout(() => {
-        setIsRecording(false);
-        setMessage("I'm speaking through the microphone now");
-        if (inputRef.current) {
-          inputRef.current.focus();
-        }
-      }, 3000);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (error) {
+        console.warn('Failed to stop recorder during cleanup', error);
+      }
     }
-  };
+    stopStream();
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => undefined);
+      audioContextRef.current = null;
+    }
+  }, [stopStream]);
 
-  const disableInput = isProcessing || isRecording;
+  const disableInput = isProcessing || isRecording || isTranscribing;
 
   return (
     <div className="w-full mt-4 px-2">
@@ -56,7 +179,7 @@ const InputSection: React.FC = () => {
               : 'bg-purple-100 text-purple-600 hover:bg-purple-200')
           }
           aria-label={isRecording ? 'Stop recording' : 'Start voice recording'}
-          disabled={isProcessing}
+          disabled={isProcessing || isTranscribing}
         >
           <Mic size={20} />
         </button>
@@ -86,6 +209,11 @@ const InputSection: React.FC = () => {
           <Send size={20} />
         </button>
       </div>
+      {(isRecording || isTranscribing) && (
+        <div className="mt-2 text-xs text-purple-400">
+          {isRecording ? '録音中...' : '音声を解析しています...'}
+        </div>
+      )}
     </div>
   );
 };

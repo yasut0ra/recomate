@@ -90,17 +90,8 @@ class TextToSpeech:
     def speak(self, text):
         """テキストを音声に変換して再生"""
         try:
-            # キャッシュを確認
-            cache_path = self._get_cache_path(text)
-            if cache_path.exists():
-                print("キャッシュから音声を読み込みます")
-                audio_data = cache_path.read_bytes()
-            else:
-                print("新しい音声を生成します")
-                audio_data = self._generate_audio(text)
-                # キャッシュに保存
-                cache_path.write_bytes(audio_data)
-            
+            audio_data = self.synthesise(text)
+
             # 一時ファイルを作成
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
                 temp_filename = temp_file.name
@@ -136,6 +127,18 @@ class TextToSpeech:
             self.pre_phoneme_length = pre_phoneme_length
         if post_phoneme_length is not None:
             self.post_phoneme_length = post_phoneme_length
+
+    def synthesise(self, text: str) -> bytes:
+        """テキストを音声データに変換して返す"""
+        cache_path = self._get_cache_path(text)
+        if cache_path.exists():
+            print("キャッシュから音声を読み込みます")
+            return cache_path.read_bytes()
+
+        print("新しい音声を生成します")
+        audio_data = self._generate_audio(text)
+        cache_path.write_bytes(audio_data)
+        return audio_data
 
 if __name__ == "__main__":
     # テスト用

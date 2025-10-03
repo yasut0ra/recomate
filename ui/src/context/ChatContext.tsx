@@ -1,6 +1,15 @@
-import React, { createContext, useContext, useMemo, useState, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+} from 'react';
 import type { ReactNode } from 'react';
 import { postChatMessage } from '../api/chatApi';
+import { requestSpeechSynthesis, requestTranscription } from '../api/audioApi';
 import type {
   CharacterEmotion,
   CharacterModel,
@@ -21,9 +30,15 @@ interface ChatContextType {
   resetConversation: () => void;
   apiKey: string | null;
   setApiKey: (key: string | null) => void;
+  transcribeAudio: (audio: Float32Array, sampleRate: number) => Promise<string | null>;
+  isTranscribing: boolean;
+  voiceEnabled: boolean;
+  setVoiceEnabled: (value: boolean) => void;
+  playAssistantSpeech: (text: string) => Promise<void>;
 }
 
 const API_KEY_STORAGE = 'recomate:api-key';
+const VOICE_ENABLED_STORAGE = 'recomate:voice-enabled';
 
 const createInitialAssistantMessage = (): ChatMessage => ({
   id: 'assistant-intro',
@@ -185,12 +200,47 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return null;
     }
   });
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [voiceEnabled, setVoiceEnabledState] = useState<boolean>(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+    try {
+      const stored = localStorage.getItem(VOICE_ENABLED_STORAGE);
+      if (stored === null) {
+        return true;
+      }
+      return stored === 'true';
+    } catch (storageError) {
+      console.warn('Failed to read voice preference from storage', storageError);
+      return true;
+    }
+  });
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+
+  const stopAudioPlayback = useCallback(() => {
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+      } catch (pauseError) {
+        console.warn('Failed to pause audio playback', pauseError);
+      }
+      audioRef.current.src = '';
+      audioRef.current = null;
+    }
+    if (audioUrlRef.current && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(audioUrlRef.current);
+    }
+    audioUrlRef.current = null;
+  }, []);
 
   const resetConversation = useCallback(() => {
+    stopAudioPlayback();
     setMessages([createInitialAssistantMessage()]);
     setCharacterEmotion('happy');
     setError(null);
-  }, []);
+  }, [stopAudioPlayback]);
 
   const setApiKey = useCallback((key: string | null) => {
     setApiKeyState(key);
@@ -207,6 +257,100 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.warn('Failed to persist API key', storageError);
     }
   }, []);
+
+  const setVoiceEnabled = useCallback((value: boolean) => {
+    setVoiceEnabledState(value);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(VOICE_ENABLED_STORAGE, value ? 'true' : 'false');
+      } catch (storageError) {
+        console.warn('Failed to persist voice preference', storageError);
+      }
+    }
+    if (!value) {
+      stopAudioPlayback();
+    }
+  }, [stopAudioPlayback]);
+
+  useEffect(() => () => {
+    stopAudioPlayback();
+  }, [stopAudioPlayback]);
+
+  useEffect(() => {
+    if (!voiceEnabled) {
+      stopAudioPlayback();
+    }
+  }, [voiceEnabled, stopAudioPlayback]);
+
+  const transcribeAudio = useCallback(async (audio: Float32Array, sampleRate: number) => {
+    if (audio.length === 0) {
+      return null;
+    }
+
+    setError(null);
+    setIsTranscribing(true);
+
+    try {
+      const response = await requestTranscription(audio, sampleRate, { apiKey });
+      const transcript = response.text?.trim() ?? '';
+      if (!transcript) {
+        return null;
+      }
+      return transcript;
+    } catch (err) {
+      console.error('Failed to transcribe audio', err);
+      let messageText = '音声の解析に失敗しました';
+      if (err instanceof Error && err.message) {
+        messageText = err.message;
+      }
+      setError(messageText);
+      return null;
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [apiKey]);
+
+  const playAssistantSpeech = useCallback(async (text: string) => {
+    if (!voiceEnabled) {
+      return;
+    }
+
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    try {
+      stopAudioPlayback();
+      const blob = await requestSpeechSynthesis(trimmed, { apiKey });
+      if (typeof window === 'undefined' || typeof URL === 'undefined') {
+        return;
+      }
+
+      const objectUrl = URL.createObjectURL(blob);
+      audioUrlRef.current = objectUrl;
+      const audioElement = new Audio(objectUrl);
+      audioRef.current = audioElement;
+
+      const cleanup = () => {
+        audioElement.removeEventListener('ended', cleanup);
+        audioElement.removeEventListener('error', cleanup);
+        stopAudioPlayback();
+      };
+
+      audioElement.addEventListener('ended', cleanup);
+      audioElement.addEventListener('error', cleanup);
+
+      try {
+        await audioElement.play();
+      } catch (playError) {
+        cleanup();
+        console.warn('Failed to play synthesized audio', playError);
+      }
+    } catch (err) {
+      console.warn('Failed to synthesise speech', err);
+    }
+  }, [voiceEnabled, apiKey, stopAudioPlayback]);
 
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim();
@@ -237,14 +381,18 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         emotion: assistantEmotion,
       };
 
-      setMessages(prev => {
-        const historyMessages = normaliseHistory(apiResponse.conversation_history);
-        if (historyMessages) {
-          return historyMessages;
-        }
-        return prev.concat(assistantMessage);
-      });
+      const historyMessages = normaliseHistory(apiResponse.conversation_history);
+      setMessages(prev => (historyMessages ? historyMessages : prev.concat(assistantMessage)));
       setCharacterEmotion(assistantEmotion);
+
+      if (voiceEnabled) {
+        const latestAssistant = historyMessages
+          ? historyMessages.filter(message => message.sender === 'assistant').at(-1)
+          : assistantMessage;
+        if (latestAssistant?.text) {
+          void playAssistantSpeech(latestAssistant.text);
+        }
+      }
     } catch (err) {
       console.error('Failed to send chat message', err);
       let messageText = 'メッセージの送信に失敗しました';
@@ -272,6 +420,11 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     resetConversation,
     apiKey,
     setApiKey,
+    transcribeAudio,
+    isTranscribing,
+    voiceEnabled,
+    setVoiceEnabled,
+    playAssistantSpeech,
   }), [
     messages,
     sendMessage,
@@ -282,6 +435,11 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     resetConversation,
     apiKey,
     setApiKey,
+    transcribeAudio,
+    isTranscribing,
+    voiceEnabled,
+    setVoiceEnabled,
+    playAssistantSpeech,
   ]);
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
