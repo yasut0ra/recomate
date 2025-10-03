@@ -1,8 +1,11 @@
 import numpy as np
 import os
+import logging
 from typing import List, Dict, Tuple, Optional
 from openai import OpenAI
 import time
+
+logger = logging.getLogger(__name__)
 
 class TopicBandit:
     def __init__(self, topics: List[str], alpha: float = 0.1, client: Optional[OpenAI] = None):
@@ -12,9 +15,24 @@ class TopicBandit:
         self.values = np.zeros(self.n_topics)
         self.counts = np.zeros(self.n_topics)
         self.conversation_history: List[Dict] = []
-        self.client = client or OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.client: Optional[OpenAI] = None
+        self._client_initialisation_error: Optional[Exception] = None
 
-    def set_client(self, client: OpenAI):
+        if client is not None:
+            self.client = client
+        else:
+            api_key = os.getenv('OPENAI_API_KEY')
+            if api_key:
+                try:
+                    self.client = OpenAI(api_key=api_key)
+                except Exception as exc:
+                    self._client_initialisation_error = exc
+                    logger.warning("TopicBandit could not initialise OpenAI client: %s", exc)
+                    self.client = None
+            else:
+                logger.warning("TopicBandit: OpenAI API key is not configured; exploration and evaluation will use fallbacks.")
+
+    def set_client(self, client: Optional[OpenAI]):
         """Update the OpenAI client instance used for bandit decisions."""
         self.client = client
         
@@ -30,9 +48,12 @@ class TopicBandit:
     
     def _explore_with_llm(self, context: str) -> Tuple[int, str]:
         """LLMを使用して関連トピックを探索"""
+        if self.client is None:
+            logger.warning("TopicBandit: OpenAI client unavailable; selecting a random topic instead of LLM-guided exploration.")
+            topic_idx = np.random.randint(self.n_topics)
+            return topic_idx, self.topics[topic_idx]
+
         try:
-            if self.client is None:
-                raise RuntimeError('OpenAI client is not configured')
             prompt = f"""
             以下の会話の文脈を考慮して、最も適切なトピックを選択してください。
             利用可能なトピック: {', '.join(self.topics)}
@@ -62,9 +83,11 @@ class TopicBandit:
     
     def evaluate_response(self, response: str, user_input: str) -> float:
         """LLMを使用して応答の質を評価"""
+        if self.client is None:
+            logger.warning("TopicBandit: OpenAI client unavailable; returning default evaluation score.")
+            return 0.5
+
         try:
-            if self.client is None:
-                raise RuntimeError('OpenAI client is not configured')
             prompt = f"""
             以下の会話の応答を評価してください：
             
@@ -122,9 +145,11 @@ class TopicBandit:
     
     def generate_subtopics(self, main_topic: str) -> List[str]:
         """メイントピックに関連するサブトピックを生成"""
+        if self.client is None:
+            logger.warning("TopicBandit: OpenAI client unavailable; skipping subtopic generation.")
+            return []
+
         try:
-            if self.client is None:
-                raise RuntimeError('OpenAI client is not configured')
             prompt = f"""
             「{main_topic}」に関連する、具体的な会話のトピックを5つ生成してください。
             各トピックは具体的で、会話を発展させやすいものにしてください。
