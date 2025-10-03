@@ -7,14 +7,28 @@ import time
 
 logger = logging.getLogger(__name__)
 
+
 class TopicBandit:
+    """LinUCB-based multi-armed bandit for topic recommendation."""
+
     def __init__(self, topics: List[str], alpha: float = 0.1, client: Optional[OpenAI] = None):
         self.topics = topics
         self.n_topics = len(topics)
-        self.alpha = alpha
+        self.conversation_history: List[Dict] = []
+
+        # LinUCB parameters
+        self.feature_dim = 3  # [bias, keyword match, popularity]
+        self.exploration_param = max(alpha, 0.01)
+        self.A_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
+        self.A_inv_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
+        self.b_vectors = [np.zeros(self.feature_dim) for _ in range(self.n_topics)]
+
+        # Legacy averages retained for stats/debugging
         self.values = np.zeros(self.n_topics)
         self.counts = np.zeros(self.n_topics)
-        self.conversation_history: List[Dict] = []
+
+        self._last_contexts: Dict[int, str] = {}
+
         self.client: Optional[OpenAI] = None
         self._client_initialisation_error: Optional[Exception] = None
 
@@ -36,15 +50,26 @@ class TopicBandit:
         """Update the OpenAI client instance used for bandit decisions."""
         self.client = client
         
-    def select_topic(self, epsilon: float = 0.1, context: str = "") -> Tuple[int, str]:
-        """コンテキストを考慮したトピック選択"""
-        if np.random.random() < epsilon:
-            # 探索：LLMを使用して関連トピックを選択
-            return self._explore_with_llm(context)
-        else:
-            # 活用：現在の最良のトピックを選択
-            topic_idx = np.argmax(self.values)
-            return topic_idx, self.topics[topic_idx]
+    def select_topic(self, context: str = "") -> Tuple[int, str]:
+        """LinUCB でコンテキストを考慮したトピックを選択"""
+        context = context or ""
+
+        best_score = float('-inf')
+        best_idx = 0
+
+        for idx in range(self.n_topics):
+            x = self._get_feature_vector(idx, context)
+            A_inv = self.A_inv_matrices[idx]
+            theta = A_inv @ self.b_vectors[idx]
+            exploration_bonus = self.exploration_param * np.sqrt(np.dot(x, A_inv @ x))
+            score = float(np.dot(theta, x) + exploration_bonus)
+
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        self._last_contexts[best_idx] = context
+        return best_idx, self.topics[best_idx]
     
     def _explore_with_llm(self, context: str) -> Tuple[int, str]:
         """LLMを使用して関連トピックを探索"""
@@ -80,6 +105,23 @@ class TopicBandit:
             # エラー時はランダム選択にフォールバック
             topic_idx = np.random.randint(self.n_topics)
             return topic_idx, self.topics[topic_idx]
+
+    def _get_feature_vector(self, topic_idx: int, context: str) -> np.ndarray:
+        """LinUCB 用の特徴量ベクトルを生成"""
+        features = np.zeros(self.feature_dim, dtype=float)
+        features[0] = 1.0  # bias term
+
+        context_lower = context.lower()
+        topic_keyword = self.topics[topic_idx].lower()
+        features[1] = 1.0 if topic_keyword in context_lower else 0.0
+
+        total_counts = float(self.counts.sum())
+        if total_counts > 0:
+            features[2] = self.counts[topic_idx] / total_counts
+        else:
+            features[2] = 0.0
+
+        return features
     
     def evaluate_response(self, response: str, user_input: str) -> float:
         """LLMを使用して応答の質を評価"""
@@ -175,10 +217,32 @@ class TopicBandit:
             print(f"サブトピック生成でエラーが発生: {e}")
             return []
     
-    def update(self, topic_idx: int, reward: float):
-        """選択したトピックの報酬に基づいて価値を更新"""
+    def update(self, topic_idx: int, reward: float, context: Optional[str] = None):
+        """LinUCB パラメータの更新"""
+        if topic_idx < 0 or topic_idx >= self.n_topics:
+            logger.warning("TopicBandit.update: invalid topic index %s", topic_idx)
+            return
+
+        if context is None:
+            context = self._last_contexts.get(topic_idx, "")
+
+        x = self._get_feature_vector(topic_idx, context)
+        A = self.A_matrices[topic_idx]
+        b = self.b_vectors[topic_idx]
+
+        A += np.outer(x, x)
+        self.b_vectors[topic_idx] = b + reward * x
+        try:
+            self.A_inv_matrices[topic_idx] = np.linalg.inv(A)
+        except np.linalg.LinAlgError:
+            logger.exception("TopicBandit: failed to invert matrix for topic %s", self.topics[topic_idx])
+            self.A_matrices[topic_idx] = np.identity(self.feature_dim)
+            self.A_inv_matrices[topic_idx] = np.identity(self.feature_dim)
+            self.b_vectors[topic_idx] = np.zeros(self.feature_dim)
+            return
+
         self.counts[topic_idx] += 1
-        self.values[topic_idx] += self.alpha * (reward - self.values[topic_idx])
+        self.values[topic_idx] += self.exploration_param * (reward - self.values[topic_idx])
     
     def get_topic_stats(self) -> Dict:
         """各トピックの統計情報を取得"""
