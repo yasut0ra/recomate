@@ -8,7 +8,7 @@ import React, {
   useEffect,
 } from 'react';
 import type { ReactNode } from 'react';
-import { postChatMessage } from '../api/chatApi';
+import { fetchTopicStats, postChatMessage } from '../api/chatApi';
 import { requestSpeechSynthesis, requestTranscription } from '../api/audioApi';
 import type {
   CharacterEmotion,
@@ -16,6 +16,7 @@ import type {
   ChatMessage,
   ChatApiResponse,
   ConversationHistoryEntry,
+  TopicStatsResponse,
 } from '../types';
 
 interface ChatContextType {
@@ -35,6 +36,9 @@ interface ChatContextType {
   voiceEnabled: boolean;
   setVoiceEnabled: (value: boolean) => void;
   playAssistantSpeech: (text: string) => Promise<void>;
+  topicStats: TopicStatsResponse | null;
+  isTopicStatsLoading: boolean;
+  refreshTopicStats: () => Promise<void>;
 }
 
 const API_KEY_STORAGE = 'recomate:api-key';
@@ -216,6 +220,8 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return true;
     }
   });
+  const [topicStats, setTopicStats] = useState<TopicStatsResponse | null>(null);
+  const [isTopicStatsLoading, setIsTopicStatsLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
 
@@ -281,6 +287,18 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       stopAudioPlayback();
     }
   }, [voiceEnabled, stopAudioPlayback]);
+
+  const refreshTopicStats = useCallback(async () => {
+    setIsTopicStatsLoading(true);
+    try {
+      const stats = await fetchTopicStats();
+      setTopicStats(stats);
+    } catch (err) {
+      console.warn('Failed to fetch topic stats', err);
+    } finally {
+      setIsTopicStatsLoading(false);
+    }
+  }, []);
 
   const transcribeAudio = useCallback(async (audio: Float32Array, sampleRate: number) => {
     if (audio.length === 0) {
@@ -425,6 +443,9 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     voiceEnabled,
     setVoiceEnabled,
     playAssistantSpeech,
+    topicStats,
+    isTopicStatsLoading,
+    refreshTopicStats,
   }), [
     messages,
     sendMessage,
@@ -440,6 +461,9 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     voiceEnabled,
     setVoiceEnabled,
     playAssistantSpeech,
+    topicStats,
+    isTopicStatsLoading,
+    refreshTopicStats,
   ]);
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
