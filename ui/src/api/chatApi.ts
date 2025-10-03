@@ -1,8 +1,8 @@
 import type { ChatApiResponse } from '../types';
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
+export const DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
 
-const resolveBaseUrl = () => {
+export const resolveBaseUrl = () => {
   const fromEnv = import.meta.env?.VITE_API_BASE_URL as string | undefined;
   const trimmed = fromEnv?.trim();
   if (!trimmed) {
