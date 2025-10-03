@@ -1,6 +1,6 @@
 export type CharacterEmotion = 'happy' | 'thinking' | 'surprised' | 'sad' | 'neutral';
 
-export type CharacterModel = 'anime-girl' | 'anime-boy';
+export type CharacterModel = 'rico' | 'hachika';
 
 export type MessageSender = 'user' | 'assistant';
 
