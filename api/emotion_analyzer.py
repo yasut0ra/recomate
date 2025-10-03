@@ -1,16 +1,32 @@
 from typing import Dict, List, Tuple, Optional
+import logging
 import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
+
 
 class EmotionAnalyzer:
     def __init__(self, client: Optional[OpenAI] = None):
         # 環境変数の読み込み
         load_dotenv()
-        self.client = client or OpenAI()
+        self.client: Optional[OpenAI] = None
+        self._client_initialisation_error: Optional[Exception] = None
+
+        if client is not None:
+            self.client = client
+        else:
+            try:
+                self.client = OpenAI()
+            except Exception as exc:
+                self._client_initialisation_error = exc
+                logger.warning("EmotionAnalyzer could not initialise OpenAI client: %s", exc)
+                self.client = None
+
         self._initialise_metadata()
 
-    def set_client(self, client: OpenAI):
+    def set_client(self, client: Optional[OpenAI]):
         """Update the OpenAI client used for emotion-related prompts."""
         self.client = client
 
@@ -34,6 +50,10 @@ class EmotionAnalyzer:
     
     def analyze_emotion(self, text: str) -> Dict:
         """テキストから感情を分析"""
+        if self.client is None:
+            logger.warning("EmotionAnalyzer: OpenAI client is unavailable; returning default emotion data.")
+            return self._get_default_emotion()
+
         try:
             prompt = f"""
             以下のテキストから感情を分析してください：
@@ -131,6 +151,10 @@ class EmotionAnalyzer:
     
     def get_emotion_expression(self, emotion_data: Dict) -> str:
         """感情データに基づいて表現を生成"""
+        if self.client is None:
+            logger.warning("EmotionAnalyzer: OpenAI client is unavailable; falling back to neutral expression.")
+            return "通常の表情"
+
         try:
             prompt = f"""
             以下の感情データに基づいて、VTuberの表現を生成してください：
