@@ -321,6 +321,15 @@ class TopicBandit:
             }
             for i, topic in enumerate(self.topics)
         }
+
+    def get_summary(self) -> Dict[str, Any]:
+        """バンディットの概要情報を返す"""
+        return {
+            'topics': self.get_topic_stats(),
+            'subtopics': self.subtopic_cache,
+            'totalSelections': int(self.total_selections),
+            'featureDim': self.feature_dim,
+        }
     
     def add_to_history(self, user_input: str, response: str, topic: str):
         """会話履歴に追加"""
