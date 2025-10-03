@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from openai import OpenAI
 import time
 
@@ -17,7 +17,7 @@ class TopicBandit:
         self.conversation_history: List[Dict] = []
 
         # LinUCB parameters
-        self.feature_dim = 3  # [bias, keyword match, popularity]
+        self.feature_dim = 5  # [bias, keyword match, popularity, recency, emotion]
         self.exploration_param = max(alpha, 0.01)
         self.A_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
         self.A_inv_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
@@ -27,7 +27,10 @@ class TopicBandit:
         self.values = np.zeros(self.n_topics)
         self.counts = np.zeros(self.n_topics)
 
+        self.last_selected_times = np.zeros(self.n_topics)
+        self.total_selections = 0
         self._last_contexts: Dict[int, str] = {}
+        self._last_features: Dict[int, Dict[str, Any]] = {}
 
         self.client: Optional[OpenAI] = None
         self._client_initialisation_error: Optional[Exception] = None
@@ -50,15 +53,20 @@ class TopicBandit:
         """Update the OpenAI client instance used for bandit decisions."""
         self.client = client
         
-    def select_topic(self, context: str = "") -> Tuple[int, str]:
+    def select_topic(self, context: str = "", features: Optional[Dict[str, Any]] = None) -> Tuple[int, str]:
         """LinUCB でコンテキストを考慮したトピックを選択"""
         context = context or ""
+        if features is None:
+            features = {"context_text": context}
+        else:
+            features = dict(features)
+            features.setdefault("context_text", context)
 
         best_score = float('-inf')
         best_idx = 0
 
         for idx in range(self.n_topics):
-            x = self._get_feature_vector(idx, context)
+            x = self._get_feature_vector(idx, features)
             A_inv = self.A_inv_matrices[idx]
             theta = A_inv @ self.b_vectors[idx]
             exploration_bonus = self.exploration_param * np.sqrt(np.dot(x, A_inv @ x))
@@ -69,6 +77,10 @@ class TopicBandit:
                 best_idx = idx
 
         self._last_contexts[best_idx] = context
+        self._last_features[best_idx] = features
+        current_time = time.time()
+        self.last_selected_times[best_idx] = current_time
+        self.total_selections += 1
         return best_idx, self.topics[best_idx]
     
     def _explore_with_llm(self, context: str) -> Tuple[int, str]:
@@ -106,22 +118,35 @@ class TopicBandit:
             topic_idx = np.random.randint(self.n_topics)
             return topic_idx, self.topics[topic_idx]
 
-    def _get_feature_vector(self, topic_idx: int, context: str) -> np.ndarray:
+    def _get_feature_vector(self, topic_idx: int, feature_payload: Dict[str, Any]) -> np.ndarray:
         """LinUCB 用の特徴量ベクトルを生成"""
-        features = np.zeros(self.feature_dim, dtype=float)
-        features[0] = 1.0  # bias term
+        vector = np.zeros(self.feature_dim, dtype=float)
+        vector[0] = 1.0  # bias
 
-        context_lower = context.lower()
+        context_text = str(feature_payload.get('context_text', '') or '')
+        context_lower = context_text.lower()
         topic_keyword = self.topics[topic_idx].lower()
-        features[1] = 1.0 if topic_keyword in context_lower else 0.0
+        vector[1] = 1.0 if topic_keyword in context_lower else 0.0
 
-        total_counts = float(self.counts.sum())
-        if total_counts > 0:
-            features[2] = self.counts[topic_idx] / total_counts
+        total = max(float(self.total_selections), 1.0)
+        vector[2] = float(self.counts[topic_idx]) / total
+
+        last_time = self.last_selected_times[topic_idx]
+        if last_time > 0:
+            delta = max(time.time() - last_time, 0.0)
+            vector[3] = float(np.exp(-delta / 300.0))
         else:
-            features[2] = 0.0
+            vector[3] = 0.0
 
-        return features
+        emotion_data = feature_payload.get('emotion') or {}
+        intensity = emotion_data.get('intensity')
+        try:
+            vector[4] = float(intensity)
+        except (TypeError, ValueError):
+            vector[4] = 0.5
+
+        vector[4] = max(0.0, min(1.0, vector[4]))
+        return vector
     
     def evaluate_response(self, response: str, user_input: str) -> float:
         """LLMを使用して応答の質を評価"""
@@ -217,16 +242,21 @@ class TopicBandit:
             print(f"サブトピック生成でエラーが発生: {e}")
             return []
     
-    def update(self, topic_idx: int, reward: float, context: Optional[str] = None):
+    def update(self, topic_idx: int, reward: float, features: Optional[Dict[str, Any]] = None):
         """LinUCB パラメータの更新"""
         if topic_idx < 0 or topic_idx >= self.n_topics:
             logger.warning("TopicBandit.update: invalid topic index %s", topic_idx)
             return
 
-        if context is None:
-            context = self._last_contexts.get(topic_idx, "")
+        if features is None:
+            features = self._last_features.get(topic_idx)
+            if features is None:
+                features = {"context_text": self._last_contexts.get(topic_idx, "")}
+        else:
+            features = dict(features)
+            features.setdefault("context_text", self._last_contexts.get(topic_idx, ""))
 
-        x = self._get_feature_vector(topic_idx, context)
+        x = self._get_feature_vector(topic_idx, features)
         A = self.A_matrices[topic_idx]
         b = self.b_vectors[topic_idx]
 
@@ -242,7 +272,7 @@ class TopicBandit:
             return
 
         self.counts[topic_idx] += 1
-        self.values[topic_idx] += self.exploration_param * (reward - self.values[topic_idx])
+        self.values[topic_idx] += 0.1 * (reward - self.values[topic_idx])
     
     def get_topic_stats(self) -> Dict:
         """各トピックの統計情報を取得"""
