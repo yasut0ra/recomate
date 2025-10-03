@@ -18,7 +18,8 @@ class TopicBandit:
 
         # LinUCB parameters
         self.emotion_labels = ['happy', 'sad', 'angry', 'surprised', 'neutral']
-        self.feature_dim = 4 + len(self.emotion_labels)  # bias, keyword match, popularity, recency, emotion one-hot
+        self.max_subtopics = 5
+        self.feature_dim = 4 + len(self.emotion_labels) + 2  # bias, keyword match, popularity, recency, emotions, subtopic stats
         self.exploration_param = max(alpha, 0.01)
         self.A_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
         self.A_inv_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
@@ -33,6 +34,7 @@ class TopicBandit:
         self.total_selections = 0
         self._last_contexts: Dict[int, str] = {}
         self._last_features: Dict[int, Dict[str, Any]] = {}
+        self.subtopic_cache: Dict[str, List[str]] = {topic: [] for topic in topics}
 
         self.client: Optional[OpenAI] = None
         self._client_initialisation_error: Optional[Exception] = None
@@ -159,6 +161,26 @@ class TopicBandit:
             vector[idx] = 1.0 if label == primary else 0.0
             idx += 1
 
+        subtopics = feature_payload.get('subtopics')
+        if not subtopics:
+            topic = self.topics[topic_idx]
+            subtopics = self.subtopic_cache.get(topic, [])
+
+        if subtopics:
+            vector[idx] = min(len(subtopics), self.max_subtopics) / float(self.max_subtopics)
+        else:
+            vector[idx] = 0.0
+        idx += 1
+
+        text_for_match = str(feature_payload.get('user_input') or feature_payload.get('context_text') or '')
+        text_lower = text_for_match.lower()
+        if subtopics:
+            matches = sum(1 for item in subtopics if item and item.lower() in text_lower)
+            vector[idx] = matches / float(len(subtopics))
+        else:
+            vector[idx] = 0.0
+        idx += 1
+
         return vector
     
     def evaluate_response(self, response: str, user_input: str) -> float:
@@ -227,7 +249,7 @@ class TopicBandit:
         """メイントピックに関連するサブトピックを生成"""
         if self.client is None:
             logger.warning("TopicBandit: OpenAI client unavailable; skipping subtopic generation.")
-            return []
+            return self.subtopic_cache.get(main_topic, [])
 
         try:
             prompt = f"""
@@ -249,11 +271,13 @@ class TopicBandit:
             )
 
             subtopics = (response.choices[0].message.content or '').strip().split('\n')
-            return [topic.split('. ')[1] for topic in subtopics if '. ' in topic]
-            
+            parsed = [topic.split('. ')[1] for topic in subtopics if '. ' in topic]
+            self.subtopic_cache[main_topic] = parsed
+            return parsed
+
         except Exception as e:
             print(f"サブトピック生成でエラーが発生: {e}")
-            return []
+            return self.subtopic_cache.get(main_topic, [])
     
     def update(self, topic_idx: int, reward: float, features: Optional[Dict[str, Any]] = None):
         """LinUCB パラメータの更新"""
