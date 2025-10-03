@@ -17,7 +17,8 @@ class TopicBandit:
         self.conversation_history: List[Dict] = []
 
         # LinUCB parameters
-        self.feature_dim = 5  # [bias, keyword match, popularity, recency, emotion]
+        self.emotion_labels = ['happy', 'sad', 'angry', 'surprised', 'neutral']
+        self.feature_dim = 4 + len(self.emotion_labels)  # bias, keyword match, popularity, recency, emotion one-hot
         self.exploration_param = max(alpha, 0.01)
         self.A_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
         self.A_inv_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
@@ -121,31 +122,41 @@ class TopicBandit:
     def _get_feature_vector(self, topic_idx: int, feature_payload: Dict[str, Any]) -> np.ndarray:
         """LinUCB 用の特徴量ベクトルを生成"""
         vector = np.zeros(self.feature_dim, dtype=float)
-        vector[0] = 1.0  # bias
+        idx = 0
+
+        vector[idx] = 1.0  # bias
+        idx += 1
 
         context_text = str(feature_payload.get('context_text', '') or '')
         context_lower = context_text.lower()
         topic_keyword = self.topics[topic_idx].lower()
-        vector[1] = 1.0 if topic_keyword in context_lower else 0.0
+        vector[idx] = 1.0 if topic_keyword in context_lower else 0.0
+        idx += 1
 
         total = max(float(self.total_selections), 1.0)
-        vector[2] = float(self.counts[topic_idx]) / total
+        vector[idx] = float(self.counts[topic_idx]) / total
+        idx += 1
 
         last_time = self.last_selected_times[topic_idx]
         if last_time > 0:
             delta = max(time.time() - last_time, 0.0)
-            vector[3] = float(np.exp(-delta / 300.0))
+            vector[idx] = float(np.exp(-delta / 300.0))
         else:
-            vector[3] = 0.0
+            vector[idx] = 0.0
+        idx += 1
 
         emotion_data = feature_payload.get('emotion') or {}
-        intensity = emotion_data.get('intensity')
-        try:
-            vector[4] = float(intensity)
-        except (TypeError, ValueError):
-            vector[4] = 0.5
+        primary_emotions = emotion_data.get('primary_emotions')
+        primary = ''
+        if isinstance(primary_emotions, list) and primary_emotions:
+            primary = str(primary_emotions[0]).lower()
+        elif isinstance(emotion_data, str):
+            primary = emotion_data.lower()
 
-        vector[4] = max(0.0, min(1.0, vector[4]))
+        for label in self.emotion_labels:
+            vector[idx] = 1.0 if label == primary else 0.0
+            idx += 1
+
         return vector
     
     def evaluate_response(self, response: str, user_input: str) -> float:
