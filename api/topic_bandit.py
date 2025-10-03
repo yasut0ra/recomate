@@ -27,6 +27,7 @@ class TopicBandit:
         # Legacy averages retained for stats/debugging
         self.values = np.zeros(self.n_topics)
         self.counts = np.zeros(self.n_topics)
+        self.topic_frequency = np.zeros(self.n_topics)
 
         self.last_selected_times = np.zeros(self.n_topics)
         self.total_selections = 0
@@ -82,6 +83,7 @@ class TopicBandit:
         current_time = time.time()
         self.last_selected_times[best_idx] = current_time
         self.total_selections += 1
+        self.topic_frequency[best_idx] += 1
         return best_idx, self.topics[best_idx]
     
     def _explore_with_llm(self, context: str) -> Tuple[int, str]:
@@ -134,7 +136,7 @@ class TopicBandit:
         idx += 1
 
         total = max(float(self.total_selections), 1.0)
-        vector[idx] = float(self.counts[topic_idx]) / total
+        vector[idx] = float(self.topic_frequency[topic_idx]) / total
         idx += 1
 
         last_time = self.last_selected_times[topic_idx]
@@ -289,10 +291,11 @@ class TopicBandit:
         """各トピックの統計情報を取得"""
         return {
             topic: {
-                'value': value,
-                'count': count
+                'value': self.values[i],
+                'count': self.counts[i],
+                'frequency': self.topic_frequency[i],
             }
-            for topic, value, count in zip(self.topics, self.values, self.counts)
+            for i, topic in enumerate(self.topics)
         }
     
     def add_to_history(self, user_input: str, response: str, topic: str):
