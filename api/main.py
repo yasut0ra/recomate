@@ -605,7 +605,12 @@ class VtuberAI:
         emotion_data = self.emotion_analyzer.analyze_emotion(text)
         
         # トピックを選択
-        topic_idx, selected_topic = self.bandit.select_topic(context=self._get_conversation_context())
+        conversation_context = self._get_conversation_context()
+        bandit_features = {
+            'context_text': conversation_context,
+            'emotion': emotion_data,
+        }
+        topic_idx, selected_topic = self.bandit.select_topic(context=conversation_context, features=bandit_features)
         self.current_topic = selected_topic
         
         # サブトピックを生成
@@ -655,7 +660,7 @@ class VtuberAI:
             # 応答の評価
             reward = self.bandit.evaluate_response(response_text, text)
             print(f"応答評価スコア: {reward:.2f}")
-            self.bandit.update(topic_idx, reward)
+            self.bandit.update(topic_idx, reward, features=bandit_features)
             
             # 会話履歴に追加
             self.bandit.add_to_history(text, response_text, selected_topic)
@@ -748,9 +753,14 @@ class VtuberAI:
         
         # 会話の文脈を取得
         context = self._get_conversation_context()
-        
+
+        bandit_features = {
+            'context_text': context,
+            'emotion': emotion_data,
+        }
+
         # トピックを選択
-        topic_idx, selected_topic = self.bandit.select_topic(context=context)
+        topic_idx, selected_topic = self.bandit.select_topic(context=context, features=bandit_features)
         self.current_topic = selected_topic
         
         # サブトピックを生成
@@ -796,7 +806,7 @@ class VtuberAI:
             
             # 応答の評価
             reward = self.bandit.evaluate_response(response_text, user_input)
-            self.bandit.update(topic_idx, reward)
+            self.bandit.update(topic_idx, reward, features=bandit_features)
             
             # 会話履歴に追加
             self.bandit.add_to_history(user_input, response_text, selected_topic)
