@@ -1,31 +1,46 @@
 import React, { useMemo } from 'react';
 import { useChatContext } from '../context/ChatContext';
 
-const EXPRESSION_IMAGES: Record<string, string> = {
-  happy: '/characters/expressions/happy.png',
-  surprised: '/characters/expressions/surprised.png',
-  sad: '/characters/expressions/sad.png',
-  angry: '/characters/expressions/angry.png',
-  neutral: '/characters/expressions/neutral.png',
+const CHARACTER_EXPRESSIONS: Record<string, Record<string, string>> = {
+  rico: {
+    happy: '/characters/rico/expressions/happy.png',
+    surprised: '/characters/rico/expressions/surprised.png',
+    sad: '/characters/rico/expressions/sad.png',
+    angry: '/characters/rico/expressions/angry.png',
+    neutral: '/characters/rico/expressions/neutral.png',
+  },
+  hachika: {
+    happy: '/characters/hachika/expressions/happy.png',
+    surprised: '/characters/hachika/expressions/surprised.png',
+    sad: '/characters/hachika/expressions/sad.png',
+    angry: '/characters/hachika/expressions/angry.png',
+    neutral: '/characters/hachika/expressions/neutral.png',
+  },
 };
 
-const Character: React.FC = () => {
-  const { characterEmotion } = useChatContext();
+const FALLBACK_MODEL = 'rico';
 
-  const resolvedEmotion = useMemo(() => {
+const Character: React.FC = () => {
+  const { characterEmotion, characterModel } = useChatContext();
+
+  const activeModel = useMemo(() => {
+    return CHARACTER_EXPRESSIONS[characterModel] ?? CHARACTER_EXPRESSIONS[FALLBACK_MODEL];
+  }, [characterModel]);
+
+  const expressionKey = useMemo(() => {
     if (!characterEmotion) {
       return 'neutral';
-    }
-    if (EXPRESSION_IMAGES[characterEmotion]) {
-      return characterEmotion;
     }
     if (characterEmotion === 'thinking') {
       return 'neutral';
     }
+    if (activeModel[characterEmotion]) {
+      return characterEmotion;
+    }
     return 'neutral';
-  }, [characterEmotion]);
+  }, [characterEmotion, activeModel]);
 
-  const expressionSrc = EXPRESSION_IMAGES[resolvedEmotion];
+  const expressionSrc = activeModel[expressionKey] ?? activeModel.neutral;
 
   return (
     <div className="relative w-full flex justify-center my-4">
@@ -34,7 +49,7 @@ const Character: React.FC = () => {
         <div className="absolute inset-4 overflow-hidden rounded-full border-4 border-white shadow-lg">
           <img
             src={expressionSrc}
-            alt={`RecoMate ${resolvedEmotion}`}
+            alt={`RecoMate ${expressionKey}`}
             className="w-full h-full object-contain select-none"
             draggable={false}
           />
