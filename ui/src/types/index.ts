@@ -30,11 +30,17 @@ export interface ChatApiResponse {
   conversation_history?: ConversationHistoryEntry[];
 }
 
-export interface TopicStat {
-  topic: string;
+export interface TopicMetric {
+  value: number;
   count: number;
-  avgReward: number;
-  expectedReward: number;
+  frequency: number;
+}
+
+export interface TopicStatsResponse {
+  topics: Record<string, TopicMetric>;
+  subtopics: Record<string, string[]>;
+  totalSelections: number;
+  featureDim: number;
 }
 
 export interface TranscriptionResponse {

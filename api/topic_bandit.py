@@ -17,7 +17,9 @@ class TopicBandit:
         self.conversation_history: List[Dict] = []
 
         # LinUCB parameters
-        self.feature_dim = 5  # [bias, keyword match, popularity, recency, emotion]
+        self.emotion_labels = ['happy', 'sad', 'angry', 'surprised', 'neutral']
+        self.max_subtopics = 5
+        self.feature_dim = 4 + len(self.emotion_labels) + 2  # bias, keyword match, popularity, recency, emotions, subtopic stats
         self.exploration_param = max(alpha, 0.01)
         self.A_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
         self.A_inv_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
@@ -26,11 +28,13 @@ class TopicBandit:
         # Legacy averages retained for stats/debugging
         self.values = np.zeros(self.n_topics)
         self.counts = np.zeros(self.n_topics)
+        self.topic_frequency = np.zeros(self.n_topics)
 
         self.last_selected_times = np.zeros(self.n_topics)
         self.total_selections = 0
         self._last_contexts: Dict[int, str] = {}
         self._last_features: Dict[int, Dict[str, Any]] = {}
+        self.subtopic_cache: Dict[str, List[str]] = {topic: [] for topic in topics}
 
         self.client: Optional[OpenAI] = None
         self._client_initialisation_error: Optional[Exception] = None
@@ -81,6 +85,7 @@ class TopicBandit:
         current_time = time.time()
         self.last_selected_times[best_idx] = current_time
         self.total_selections += 1
+        self.topic_frequency[best_idx] += 1
         return best_idx, self.topics[best_idx]
     
     def _explore_with_llm(self, context: str) -> Tuple[int, str]:
@@ -121,31 +126,61 @@ class TopicBandit:
     def _get_feature_vector(self, topic_idx: int, feature_payload: Dict[str, Any]) -> np.ndarray:
         """LinUCB 用の特徴量ベクトルを生成"""
         vector = np.zeros(self.feature_dim, dtype=float)
-        vector[0] = 1.0  # bias
+        idx = 0
+
+        vector[idx] = 1.0  # bias
+        idx += 1
 
         context_text = str(feature_payload.get('context_text', '') or '')
         context_lower = context_text.lower()
         topic_keyword = self.topics[topic_idx].lower()
-        vector[1] = 1.0 if topic_keyword in context_lower else 0.0
+        vector[idx] = 1.0 if topic_keyword in context_lower else 0.0
+        idx += 1
 
         total = max(float(self.total_selections), 1.0)
-        vector[2] = float(self.counts[topic_idx]) / total
+        vector[idx] = float(self.topic_frequency[topic_idx]) / total
+        idx += 1
 
         last_time = self.last_selected_times[topic_idx]
         if last_time > 0:
             delta = max(time.time() - last_time, 0.0)
-            vector[3] = float(np.exp(-delta / 300.0))
+            vector[idx] = float(np.exp(-delta / 300.0))
         else:
-            vector[3] = 0.0
+            vector[idx] = 0.0
+        idx += 1
 
         emotion_data = feature_payload.get('emotion') or {}
-        intensity = emotion_data.get('intensity')
-        try:
-            vector[4] = float(intensity)
-        except (TypeError, ValueError):
-            vector[4] = 0.5
+        primary_emotions = emotion_data.get('primary_emotions')
+        primary = ''
+        if isinstance(primary_emotions, list) and primary_emotions:
+            primary = str(primary_emotions[0]).lower()
+        elif isinstance(emotion_data, str):
+            primary = emotion_data.lower()
 
-        vector[4] = max(0.0, min(1.0, vector[4]))
+        for label in self.emotion_labels:
+            vector[idx] = 1.0 if label == primary else 0.0
+            idx += 1
+
+        subtopics = feature_payload.get('subtopics')
+        if not subtopics:
+            topic = self.topics[topic_idx]
+            subtopics = self.subtopic_cache.get(topic, [])
+
+        if subtopics:
+            vector[idx] = min(len(subtopics), self.max_subtopics) / float(self.max_subtopics)
+        else:
+            vector[idx] = 0.0
+        idx += 1
+
+        text_for_match = str(feature_payload.get('user_input') or feature_payload.get('context_text') or '')
+        text_lower = text_for_match.lower()
+        if subtopics:
+            matches = sum(1 for item in subtopics if item and item.lower() in text_lower)
+            vector[idx] = matches / float(len(subtopics))
+        else:
+            vector[idx] = 0.0
+        idx += 1
+
         return vector
     
     def evaluate_response(self, response: str, user_input: str) -> float:
@@ -214,7 +249,7 @@ class TopicBandit:
         """メイントピックに関連するサブトピックを生成"""
         if self.client is None:
             logger.warning("TopicBandit: OpenAI client unavailable; skipping subtopic generation.")
-            return []
+            return self.subtopic_cache.get(main_topic, [])
 
         try:
             prompt = f"""
@@ -236,11 +271,13 @@ class TopicBandit:
             )
 
             subtopics = (response.choices[0].message.content or '').strip().split('\n')
-            return [topic.split('. ')[1] for topic in subtopics if '. ' in topic]
-            
+            parsed = [topic.split('. ')[1] for topic in subtopics if '. ' in topic]
+            self.subtopic_cache[main_topic] = parsed
+            return parsed
+
         except Exception as e:
             print(f"サブトピック生成でエラーが発生: {e}")
-            return []
+            return self.subtopic_cache.get(main_topic, [])
     
     def update(self, topic_idx: int, reward: float, features: Optional[Dict[str, Any]] = None):
         """LinUCB パラメータの更新"""
@@ -278,10 +315,20 @@ class TopicBandit:
         """各トピックの統計情報を取得"""
         return {
             topic: {
-                'value': value,
-                'count': count
+                'value': self.values[i],
+                'count': self.counts[i],
+                'frequency': self.topic_frequency[i],
             }
-            for topic, value, count in zip(self.topics, self.values, self.counts)
+            for i, topic in enumerate(self.topics)
+        }
+
+    def get_summary(self) -> Dict[str, Any]:
+        """バンディットの概要情報を返す"""
+        return {
+            'topics': self.get_topic_stats(),
+            'subtopics': self.subtopic_cache,
+            'totalSelections': int(self.total_selections),
+            'featureDim': self.feature_dim,
         }
     
     def add_to_history(self, user_input: str, response: str, topic: str):

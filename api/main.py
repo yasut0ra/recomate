@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi import APIRouter
 from openai import OpenAI
 from pydantic import BaseModel, Field
 import uvicorn
@@ -129,6 +130,18 @@ async def health_check():
     if vtuber is None:
         raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
     return {"status": "healthy", "vtuber_status": "initialized"}
+
+
+@app.get("/api/topics/stats")
+async def topic_stats():
+    if vtuber is None:
+        raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
+
+    try:
+        return vtuber.bandit.get_summary()
+    except Exception as exc:
+        logger.exception("Failed to collect topic stats: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
@@ -609,12 +622,14 @@ class VtuberAI:
         bandit_features = {
             'context_text': conversation_context,
             'emotion': emotion_data,
+            'user_input': text,
         }
         topic_idx, selected_topic = self.bandit.select_topic(context=conversation_context, features=bandit_features)
         self.current_topic = selected_topic
         
         # サブトピックを生成
         subtopics = self.bandit.generate_subtopics(selected_topic)
+        bandit_features['subtopics'] = subtopics
 
         # プロンプトの作成
         prompt = f"""
@@ -757,14 +772,16 @@ class VtuberAI:
         bandit_features = {
             'context_text': context,
             'emotion': emotion_data,
+            'user_input': user_input,
         }
 
         # トピックを選択
         topic_idx, selected_topic = self.bandit.select_topic(context=context, features=bandit_features)
         self.current_topic = selected_topic
-        
+
         # サブトピックを生成
         subtopics = self.bandit.generate_subtopics(selected_topic)
+        bandit_features['subtopics'] = subtopics
         
         # プロンプトの作成
         prompt = f"""

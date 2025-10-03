@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { X } from 'lucide-react';
 import {
   LineChart,
@@ -32,7 +32,11 @@ const emotionScore = (emotion?: string) => {
 };
 
 const StatisticsModal: React.FC<StatisticsModalProps> = ({ onClose }) => {
-  const { messages } = useChatContext();
+  const { messages, topicStats, isTopicStatsLoading, refreshTopicStats } = useChatContext();
+
+  useEffect(() => {
+    void refreshTopicStats();
+  }, [refreshTopicStats]);
 
   const assistantMessages = useMemo(
     () => messages.filter(message => message.sender === 'assistant'),
@@ -63,6 +67,19 @@ const StatisticsModal: React.FC<StatisticsModalProps> = ({ onClose }) => {
   const lastEmotion = assistantMessages.length === 0
     ? '---'
     : assistantMessages[assistantMessages.length - 1].emotion || 'unknown';
+
+  const topicData = useMemo(() => {
+    if (!topicStats) {
+      return [];
+    }
+    return Object.entries(topicStats.topics).map(([topic, metrics]) => ({
+      topic,
+      count: metrics.count,
+      frequency: Number(metrics.frequency),
+      value: Number(metrics.value.toFixed(2)),
+      subtopics: topicStats.subtopics[topic] ?? [],
+    }));
+  }, [topicStats]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-30 flex items-start justify-center z-50 animate-fade-in overflow-y-auto p-4">
@@ -136,6 +153,70 @@ const StatisticsModal: React.FC<StatisticsModalProps> = ({ onClose }) => {
               <h4 className="text-sm font-medium text-purple-700">最後の感情</h4>
               <p className="text-2xl font-bold text-purple-900">{lastEmotion}</p>
             </div>
+          </div>
+
+          <div className="bg-indigo-50 p-4 rounded-lg">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-indigo-700">トピックバンディットの統計</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  void refreshTopicStats();
+                }}
+                disabled={isTopicStatsLoading}
+                className="text-sm px-3 py-1 rounded-md border border-indigo-300 text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isTopicStatsLoading ? '読み込み中...' : '再取得'}
+              </button>
+            </div>
+
+            {isTopicStatsLoading ? (
+              <div className="flex h-32 items-center justify-center text-indigo-300">読み込み中...</div>
+            ) : topicData.length === 0 ? (
+              <div className="text-sm text-indigo-300">まだトピック統計がありません</div>
+            ) : (
+              <div className="space-y-4">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-indigo-600">
+                        <th className="py-2 pr-4">トピック</th>
+                        <th className="py-2 pr-4">選択回数</th>
+                        <th className="py-2 pr-4">頻度</th>
+                        <th className="py-2 pr-4">推定価値</th>
+                        <th className="py-2">サブトピック</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-indigo-100">
+                      {topicData.map(item => (
+                        <tr key={item.topic} className="text-indigo-900">
+                          <td className="py-2 pr-4 font-medium">{item.topic}</td>
+                          <td className="py-2 pr-4">{item.count}</td>
+                          <td className="py-2 pr-4">{item.frequency.toFixed(2)}</td>
+                          <td className="py-2 pr-4">{item.value.toFixed(2)}</td>
+                          <td className="py-2">
+                            {item.subtopics.length === 0 ? (
+                              <span className="text-xs text-indigo-300">サブトピックなし</span>
+                            ) : (
+                              <div className="flex flex-wrap gap-1">
+                                {item.subtopics.slice(0, 5).map(subtopic => (
+                                  <span key={subtopic} className="text-xs px-2 py-1 rounded-full bg-white text-indigo-600 border border-indigo-200">
+                                    {subtopic}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="text-xs text-indigo-400">
+                  総試行回数: {topicStats?.totalSelections ?? 0} / 特徴次元: {topicStats?.featureDim ?? 0}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
