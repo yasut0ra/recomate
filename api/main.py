@@ -24,6 +24,12 @@ import uvicorn
 
 logger = logging.getLogger(__name__)
 
+SYSTEM_PROMPT = (
+    "You are RecoMate, a cheerful Japanese virtual companion who responds with empathy and warmth. "
+    "Always reply in natural, friendly Japanese (ja-JP), acknowledge the user's feelings, "
+    "include a helpful detail about the topic when possible, and finish with a gentle follow-up question when it fits."
+)
+
 OPTIONAL_IMPORT_ERRORS: List[Tuple[str, Exception]] = []
 _OPTIONAL_IMPORTS_REPORTED = False
 
@@ -268,6 +274,11 @@ class VtuberAI:
         self._default_api_key = os.getenv('OPENAI_API_KEY')
         self.api_key = self._default_api_key
         self.openai_client = self._create_client(self.api_key)
+        self.system_prompt = os.getenv('OPENAI_SYSTEM_PROMPT', SYSTEM_PROMPT)
+        primary_model = (os.getenv('OPENAI_CHAT_MODEL') or '').strip()
+        fallback_model = (os.getenv('OPENAI_FALLBACK_CHAT_MODEL') or '').strip()
+        self.chat_model = primary_model or 'gpt-4.1-mini'
+        self.chat_fallback_model = fallback_model or 'gpt-4o-mini'
 
         # 音声合成の初期化（オプション）
         self.tts = None
@@ -404,34 +415,120 @@ class VtuberAI:
                 })
         return history
 
+    @staticmethod
+    def _json_default(value: Any):
+        if isinstance(value, (np.floating, np.float32, np.float64)):
+            return float(value)
+        if isinstance(value, (np.integer, np.int32, np.int64)):
+            return int(value)
+        return str(value)
+
+    def _build_message_history(self, limit: int = 4) -> List[Dict[str, str]]:
+        history_messages: List[Dict[str, str]] = []
+        recent_pairs = getattr(self.bandit, 'conversation_history', [])[-limit:]
+        for entry in recent_pairs:
+            user_text = entry.get('user_input') if isinstance(entry, dict) else None
+            assistant_text = entry.get('response') if isinstance(entry, dict) else None
+            if user_text:
+                history_messages.append({'role': 'user', 'content': str(user_text)})
+            if assistant_text:
+                history_messages.append({'role': 'assistant', 'content': str(assistant_text)})
+        return history_messages
+
+    def _prepare_user_prompt(self, user_text: str, selected_topic: str, subtopics: List[str], emotion_payload: Dict[str, Any]) -> str:
+        payload = {
+            'user_input': user_text,
+            'selected_topic': selected_topic,
+            'recommended_subtopics': subtopics,
+            'detected_emotion': emotion_payload,
+            'response_guidelines': [
+                'Open with empathy toward the user.',
+                'Share one helpful or encouraging detail about the topic.',
+                'Invite the user to continue with a gentle follow-up question.',
+                'Keep the answer under three short paragraphs.'
+            ]
+        }
+        payload_text = json.dumps(payload, ensure_ascii=False, default=self._json_default)
+        return (
+            'Generate one friendly Japanese response for RecoMate. '
+            'Follow the style guide and use the structured context below as the sole source of truth.\n'
+            + payload_text
+        )
+
+    def _call_language_model(self, messages: List[Dict[str, str]]) -> str:
+        if self.openai_client is None:
+            raise RuntimeError('OpenAI client is not configured')
+        if not messages:
+            raise ValueError('No messages provided to the language model')
+        client = self.openai_client
+        if hasattr(client, 'responses') and self.chat_model:
+            try:
+                structured_input = [
+                    {
+                        'role': message['role'],
+                        'content': [{'type': 'text', 'text': message['content']}],
+                    }
+                    for message in messages
+                ]
+                response = client.responses.create(
+                    model=self.chat_model,
+                    input=structured_input,
+                )
+                output_text = getattr(response, 'output_text', None)
+                if output_text:
+                    return output_text.strip()
+                choices = getattr(response, 'choices', None)
+                if choices:
+                    message = getattr(choices[0], 'message', None)
+                    content = getattr(message, 'content', None) if message else None
+                    if isinstance(content, list):
+                        joined = ''.join(part.get('text', '') for part in content if isinstance(part, dict))
+                        if joined.strip():
+                            return joined.strip()
+            except Exception as exc:
+                logger.debug('Responses API call failed, falling back to chat completions: %s', exc)
+        chat_model = self.chat_fallback_model or self.chat_model or 'gpt-4o-mini'
+        completion = client.chat.completions.create(
+            model=chat_model,
+            messages=messages,
+        )
+        content = completion.choices[0].message.content or ''
+        return content.strip()
+
     def _fallback_response(self, user_input: str, emotion: str, emotion_data: Optional[Dict] = None, topic: Optional[str] = None) -> str:
-        """LLMが利用できない場合の代替応答を生成"""
+        """Provide a graceful canned response when the LLM is unavailable."""
         patterns: List[str] = []
         if emotion and isinstance(self.response_patterns.get('emotion'), dict):
             patterns = self.response_patterns['emotion'].get(emotion, [])
-
         if not patterns:
             patterns = self.response_patterns.get('question', [])
-
         if not patterns:
             patterns = self.response_patterns.get('greeting', [])
-
-        response_text = random.choice(patterns) if patterns else "ごめんなさい、今はうまく応答できません。"
+        default_patterns = [
+            'Gomen ne, chotto kotae ga matomaranakatta mitai. Mou sukoshi kimochi wo oshiete kureru to ureshii na.',
+            'Sukoshi kangaekonde shimatta kamoshiranai kedo, kimi no kimochi ni yorisoi tai kara mou ichido yukkuri hanasou.',
+            'Konran shichatta kamo. Demo daijoubu, itsumo soba ni iru kara. Kono ato dou shitai kana?',
+        ]
+        candidate_pool = patterns or default_patterns
+        response_text = random.choice(candidate_pool) if candidate_pool else default_patterns[0]
+        if topic:
+            response_text += f"\n(Ima {topic} no hanashi to shite kangaete iru yo)"
         self._append_conversation_entry(user_input, response_text, emotion_data)
         if topic:
             try:
                 self.bandit.add_to_history(user_input, response_text, topic)
             except Exception as exc:
-                logger.debug("Failed to record fallback response in bandit history: %s", exc)
-
+                logger.debug('Failed to record fallback response in bandit history: %s', exc)
         if emotion_data is not None:
             try:
                 expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
                 if hasattr(self, 'model') and getattr(self, 'model') is not None:
                     self.model.update_expression(expression)  # type: ignore[attr-defined]
             except Exception as exc:
-                logger.debug("Failed to update model expression during fallback: %s", exc)
+                logger.debug('Failed to update model expression during fallback: %s', exc)
         return response_text
+
+
 
 
 
@@ -613,11 +710,8 @@ class VtuberAI:
         return "neutral"
 
     def _generate_response(self, text, emotion):
-        """テキストから応答を生成"""
-        # 感情分析
+        """Generate a conversational response using the configured language model."""
         emotion_data = self.emotion_analyzer.analyze_emotion(text)
-        
-        # トピックを選択
         conversation_context = self._get_conversation_context()
         bandit_features = {
             'context_text': conversation_context,
@@ -626,38 +720,42 @@ class VtuberAI:
         }
         topic_idx, selected_topic = self.bandit.select_topic(context=conversation_context, features=bandit_features)
         self.current_topic = selected_topic
-        
-        # サブトピックを生成
         subtopics = self.bandit.generate_subtopics(selected_topic)
         bandit_features['subtopics'] = subtopics
-
-        # プロンプトの作成
-        prompt = f"""
-        トピック「{selected_topic}」について、以下のユーザーの発言に対して応答してください。
-        
-        ユーザーの感情状態：
-        - 主要な感情：{', '.join(emotion_data['primary_emotions'])}
-        - 感情の強度：{emotion_data['intensity']}
-        - 感情の組み合わせ：{emotion_data['emotion_combination']}
-        
-        関連するサブトピック：
-        {', '.join(subtopics)}
-        
-        ユーザーの発言：{text}
-        
-        以下の点に注意して応答してください：
-        1. ユーザーの感情状態に共感する
-        2. 自然な会話の流れを維持する
-        3. 感情表現を豊かに使用する
-        4. 会話を発展させる質問を含める
-        5. サブトピックを自然に取り入れる
-        
-        応答は「VTuber:」などの余計な文字を含めないでください。
-        """
-
+        messages: List[Dict[str, str]] = [{'role': 'system', 'content': self.system_prompt}]
+        messages.extend(self._build_message_history())
+        user_message = self._prepare_user_prompt(text, selected_topic, subtopics, emotion_data)
+        messages.append({'role': 'user', 'content': user_message})
         if self.openai_client is None:
-            logger.warning("VtuberAI: OpenAI client is unavailable; using fallback response.")
+            logger.warning('VtuberAI: OpenAI client is unavailable; using fallback response.')
             return self._fallback_response(text, emotion, emotion_data, selected_topic)
+        try:
+            response_text = self._call_language_model(messages)
+        except Exception as exc:
+            logger.error('LLM response generation failed: %s', exc)
+            return self._fallback_response(text, emotion, emotion_data, selected_topic)
+        if not response_text:
+            logger.warning('Received empty response from language model; using fallback.')
+            return self._fallback_response(text, emotion, emotion_data, selected_topic)
+        reward = self.bandit.evaluate_response(response_text, text)
+        logger.debug('Bandit reward: %.2f', reward)
+        try:
+            self.bandit.update(topic_idx, reward, features=bandit_features)
+        except Exception as exc:
+            logger.debug('Failed to update bandit parameters: %s', exc)
+        try:
+            self.bandit.add_to_history(text, response_text, selected_topic)
+        except Exception as exc:
+            logger.debug('Failed to append to bandit history: %s', exc)
+        try:
+            emotion_expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
+            if hasattr(self, 'model') and getattr(self, 'model') is not None:
+                self.model.update_expression(emotion_expression)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.debug('Failed to update model expression: %s', exc)
+        self._append_conversation_entry(text, response_text, emotion_data)
+        return response_text
+
 
         try:
             response = self.openai_client.chat.completions.create(
@@ -845,16 +943,21 @@ class VtuberAI:
             return self._fallback_response(user_input, self._analyze_emotion(user_input), emotion_data, selected_topic)
     
     def _get_conversation_context(self):
-        """最近の会話履歴から文脈を取得"""
-        recent_history = self.bandit.conversation_history[-3:]  # 直近3つの会話を取得
+        """Return a lightweight text summary of recent dialog turns."""
+        recent_history = getattr(self.bandit, 'conversation_history', [])[-3:]
         if not recent_history:
-            return ""
-        
-        context = "最近の会話：\n"
+            return ''
+        lines: List[str] = []
         for entry in recent_history:
-            context += f"ユーザー: {entry['user_input']}\n"
-            context += f"VTuber: {entry['response']}\n"
-        return context
+            if not isinstance(entry, dict):
+                continue
+            user_text = entry.get('user_input')
+            assistant_text = entry.get('response')
+            if user_text:
+                lines.append(f'User: {user_text}')
+            if assistant_text:
+                lines.append(f'RecoMate: {assistant_text}')
+        return '\n'.join(lines)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
