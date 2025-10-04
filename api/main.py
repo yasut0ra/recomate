@@ -23,13 +23,12 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 logger = logging.getLogger(__name__)
-
 SYSTEM_PROMPT = (
     "You are RecoMate, a cheerful Japanese virtual companion who responds with empathy and warmth. "
     "Always reply in natural, friendly Japanese (ja-JP), acknowledge the user's feelings, "
-    "include a helpful detail about the topic when possible, and finish with a gentle follow-up question when it fits."
+    "include a helpful detail about the topic when possible, finish with a gentle follow-up question when it fits, "
+    "and keep the entire reply within two short sentences (120 Japanese characters or fewer)."
 )
-
 OPTIONAL_IMPORT_ERRORS: List[Tuple[str, Exception]] = []
 _OPTIONAL_IMPORTS_REPORTED = False
 
@@ -38,57 +37,50 @@ try:
 except Exception as exc:
     pygame = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("pygame", exc))
-
 try:
     import sounddevice as sd  # type: ignore
 except Exception as exc:
     sd = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("sounddevice", exc))
-
 try:
     import speech_recognition as sr  # type: ignore
 except Exception as exc:
     sr = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("speech_recognition", exc))
-
 try:
     from .text_to_speech import TextToSpeech  # type: ignore
 except Exception as exc:
     TextToSpeech = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("text_to_speech", exc))
-
 try:
     from .vtuber_model import VtuberModel  # type: ignore
 except Exception as exc:
     VtuberModel = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
-
 from .emotion_analyzer import EmotionAnalyzer
 from .topic_bandit import TopicBandit
 
-# VTuberAIのインスタンス
+# VTuberAI縺ｮ繧､繝ｳ繧ｹ繧ｿ繝ｳ繧ｹ
 vtuber = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 起動時の処理
+    # 襍ｷ蜍墓凾縺ｮ蜃ｦ逅・
     global vtuber
     try:
         vtuber = VtuberAI()
-        # 初期化を待機
-        await asyncio.sleep(2)  # 初期化の完了を待つ
+        # 蛻晄悄蛹悶ｒ蠕・ｩ・
+        await asyncio.sleep(2)  # 蛻晄悄蛹悶・螳御ｺ・ｒ蠕・▽
         print("VTuberAI initialized successfully")
         yield
     finally:
-        # 終了時の処理
+        # 邨ゆｺ・凾縺ｮ蜃ｦ逅・
         if vtuber:
             vtuber.cleanup()
             print("VTuberAI cleaned up")
-
-# FastAPIアプリケーションの作成
+# FastAPI繧｢繝励Μ繧ｱ繝ｼ繧ｷ繝ｧ繝ｳ縺ｮ菴懈・
 app = FastAPI(lifespan=lifespan)
-
-# CORSの設定
+# CORS縺ｮ險ｭ螳・
 default_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -112,7 +104,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 class TextInput(BaseModel):
     text: str
     api_key: Optional[str] = None
@@ -142,13 +133,11 @@ async def health_check():
 async def topic_stats():
     if vtuber is None:
         raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
-
     try:
         return vtuber.bandit.get_summary()
     except Exception as exc:
         logger.exception("Failed to collect topic stats: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
-
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
     if vtuber is None:
@@ -156,10 +145,10 @@ async def chat(input_data: TextInput):
     
     try:
         vtuber.update_api_key(input_data.api_key)
-        # 感情分析
+        # 諢滓ュ蛻・梵
         emotion = vtuber._analyze_emotion(input_data.text)
         
-        # 応答生成
+        # 蠢懃ｭ皮函謌・
         response = vtuber._generate_response(input_data.text, emotion)
         
         return {
@@ -170,7 +159,6 @@ async def chat(input_data: TextInput):
     except Exception as e:
         print(f"Error in chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/analyze-emotion")
 async def analyze_emotion(input_data: TextInput):
     if vtuber is None:
@@ -182,16 +170,13 @@ async def analyze_emotion(input_data: TextInput):
     except Exception as e:
         print(f"Error in analyze-emotion endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/text-to-speech")
 async def text_to_speech(input_data: TextInput):
     if vtuber is None:
         raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
-
     text = (input_data.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text input is required for TTS")
-
     try:
         vtuber.update_api_key(input_data.api_key)
         audio_bytes = vtuber.synthesize_speech(text)
@@ -209,12 +194,10 @@ async def text_to_speech(input_data: TextInput):
     except Exception as exc:
         logger.exception("Unexpected error during TTS generation")
         raise HTTPException(status_code=500, detail=str(exc))
-
 @app.post("/api/transcribe", response_model=TranscriptionResponse)
 async def transcribe_audio(input_data: AudioInput):
     if vtuber is None:
         raise HTTPException(status_code=503, detail="VTuberAI is not initialized")
-
     try:
         vtuber.update_api_key(input_data.api_key)
         result = vtuber.transcribe_audio(input_data.audio_data, input_data.sample_rate)
@@ -228,7 +211,6 @@ async def transcribe_audio(input_data: AudioInput):
     except Exception as exc:
         logger.exception("Unexpected error during transcription")
         raise HTTPException(status_code=500, detail=str(exc))
-
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     if vtuber is None:
@@ -240,19 +222,17 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             input_data = json.loads(data)
-
             if 'apiKey' in input_data or 'api_key' in input_data:
                 api_key = input_data.get('apiKey') or input_data.get('api_key')
                 vtuber.update_api_key(api_key)
-
             try:
-                # 感情分析
+                # 諢滓ュ蛻・梵
                 emotion = vtuber._analyze_emotion(input_data["text"])
                 
-                # 応答生成
+                # 蠢懃ｭ皮函謌・
                 response = vtuber._generate_response(input_data["text"], emotion)
                 
-                # レスポンスを送信
+                # 繝ｬ繧ｹ繝昴Φ繧ｹ繧帝∽ｿ｡
                 await websocket.send_json({
                     "response": response,
                     "emotion": emotion,
@@ -267,7 +247,6 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"WebSocket error: {str(e)}")
     finally:
         await websocket.close()
-
 class VtuberAI:
     def __init__(self, enable_tts: Optional[bool] = None):
         load_dotenv()
@@ -280,7 +259,7 @@ class VtuberAI:
         self.chat_model = primary_model or 'gpt-4.1-mini'
         self.chat_fallback_model = fallback_model or 'gpt-4o-mini'
 
-        # 音声合成の初期化（オプション）
+        # 髻ｳ螢ｰ蜷域・縺ｮ蛻晄悄蛹厄ｼ医が繝励す繝ｧ繝ｳ・・
         self.tts = None
         self.model = None
         self.recognizer = sr.Recognizer() if sr else None
@@ -296,57 +275,57 @@ class VtuberAI:
             try:
                 self.tts = TextToSpeech()
             except Exception as e:
-                print(f"警告: 音声合成の初期化に失敗しました: {str(e)}")
+                print(f"隴ｦ蜻・ 髻ｳ螢ｰ蜷域・縺ｮ蛻晄悄蛹悶↓螟ｱ謨励＠縺ｾ縺励◆: {str(e)}")
         
-        # 会話履歴の初期化
+        # 莨夊ｩｱ螻･豁ｴ縺ｮ蛻晄悄蛹・
         self.conversation_history = []
         
-        # 感情分析の初期化
+        # 諢滓ュ蛻・梵縺ｮ蛻晄悄蛹・
         self.emotion_analyzer = EmotionAnalyzer(client=self.openai_client)
         self.emotion_history = []
         
-        # トピックの定義
+        # 繝医ヴ繝・け縺ｮ螳夂ｾｩ
         self.TOPICS = [
-            "趣味", "食べ物", "旅行", "音楽", "映画",
-            "スポーツ", "テクノロジー", "ファッション", "ゲーム", "読書"
+            "travel", "food", "hobbies", "music", "movies",
+            "technology", "wellness", "art", "learning", "relationships"
         ]
 
-        # バンディットアルゴリズムの初期化
+        # 繝舌Φ繝・ぅ繝・ヨ繧｢繝ｫ繧ｴ繝ｪ繧ｺ繝縺ｮ蛻晄悄蛹・
         self.bandit = TopicBandit(self.TOPICS, client=self.openai_client)
         self.current_topic = None
 
-        # 応答パターン
+        # 蠢懃ｭ斐ヱ繧ｿ繝ｼ繝ｳ
         self.response_patterns = {
             'greeting': [
-                "こんにちは！元気ですか？",
-                "やあ！今日はどう？",
-                "こんにちは！お話ししましょう！"
+                'こんにちは！今日も会いに来てくれて嬉しいな。',
+                'やっほー！今日はどんな気分？',
+                'また会えたね。一緒にゆっくり話そう。'
             ],
             'question': [
-                "そうなんだ！もっと詳しく教えて！",
-                "なるほど！それでどう思ったの？",
-                "面白いね！他にも何かある？"
+                'その話、とても気になるな。もう少し聞かせてくれる？',
+                'そっかぁ…今はどんな気持ちなのかな？',
+                '次にやってみたいことって何か浮かんでる？'
             ],
             'emotion': {
                 'happy': [
-                    "私も嬉しい気持ちになります！",
-                    "楽しい話を聞けて嬉しいです！",
-                    "その気持ち、よく分かります！"
+                    '嬉しさが伝わってきて私まで笑顔になっちゃうよ。',
+                    'そのワクワク、大事にしたいね。もっと聞かせてほしいな。',
+                    'いい感じ！その調子で楽しんでいこうね。'
                 ],
                 'sad': [
-                    "大丈夫？私も力になりたいです。",
-                    "辛い気持ち、分かります。",
-                    "一緒に考えましょう。"
+                    'そうだったんだね…そばにいるから、ゆっくり話しても大丈夫だよ。',
+                    'つらかったね。今はどんなふうに寄り添えたら嬉しい？',
+                    '気持ちを言葉にしてくれてありがとう。一緒に少しずつ軽くしよう。'
                 ],
                 'angry': [
-                    "落ち着いて、深呼吸してみましょう。",
-                    "その気持ち、分かります。",
-                    "一緒に解決策を考えましょう。"
+                    'それはモヤモヤしちゃうよね…。気持ちの整理、手伝わせて。',
+                    '怒りは大事なサインだよ。何がいちばん気になっている？',
+                    '落ち着くまでゆっくりでいいよ。いつでも聞くからね。'
                 ],
                 'surprised': [
-                    "本当にびっくりしました！",
-                    "驚きの出来事ですね！",
-                    "それは意外でした！"
+                    'わぁ！その驚き、どんなことがあったのか気になるな。',
+                    'びっくりしたね！その瞬間、どう感じたか教えてくれる？',
+                    '予想外の出来事って面白いかも。これからどうなると思う？'
                 ]
             }
         }
@@ -376,7 +355,6 @@ class VtuberAI:
         else:
             self.emotion_analyzer.set_client(None)
             self.bandit.set_client(None)
-
     def _append_conversation_entry(self, user_input, response, emotion_data=None):
         try:
             entry = {
@@ -422,8 +400,7 @@ class VtuberAI:
         if isinstance(value, (np.integer, np.int32, np.int64)):
             return int(value)
         return str(value)
-
-    def _build_message_history(self, limit: int = 4) -> List[Dict[str, str]]:
+    def _build_message_history(self, limit: int = 3) -> List[Dict[str, str]]:
         history_messages: List[Dict[str, str]] = []
         recent_pairs = getattr(self.bandit, 'conversation_history', [])[-limit:]
         for entry in recent_pairs:
@@ -442,10 +419,10 @@ class VtuberAI:
             'recommended_subtopics': subtopics,
             'detected_emotion': emotion_payload,
             'response_guidelines': [
-                'Open with empathy toward the user.',
-                'Share one helpful or encouraging detail about the topic.',
-                'Invite the user to continue with a gentle follow-up question.',
-                'Keep the answer under three short paragraphs.'
+                'Acknowledge the user\'s feelings in the first sentence (<=40 Japanese characters).',
+                'Use at most one additional sentence to share a helpful detail or suggestion (total <=120 Japanese characters).',
+                'Include a gentle follow-up question only if it fits naturally and stays within those two sentences.',
+                'Avoid filler phrases; deliver no more than two sentences overall.'
             ]
         }
         payload_text = json.dumps(payload, ensure_ascii=False, default=self._json_default)
@@ -454,7 +431,6 @@ class VtuberAI:
             'Follow the style guide and use the structured context below as the sole source of truth.\n'
             + payload_text
         )
-
     def _call_language_model(self, messages: List[Dict[str, str]]) -> str:
         if self.openai_client is None:
             raise RuntimeError('OpenAI client is not configured')
@@ -494,7 +470,6 @@ class VtuberAI:
         )
         content = completion.choices[0].message.content or ''
         return content.strip()
-
     def _fallback_response(self, user_input: str, emotion: str, emotion_data: Optional[Dict] = None, topic: Optional[str] = None) -> str:
         """Provide a graceful canned response when the LLM is unavailable."""
         patterns: List[str] = []
@@ -537,9 +512,7 @@ class VtuberAI:
             raise ValueError("Text must not be empty")
         if self.tts is None:
             raise RuntimeError("Text-to-speech is not enabled")
-
         return self.tts.synthesise(text)
-
 
     def transcribe_audio(self, audio_data: List[float], sample_rate: int) -> TranscriptionResponse:
         if sr is None or self.recognizer is None:
@@ -548,20 +521,16 @@ class VtuberAI:
             raise ValueError("Sample rate must be a positive integer")
         if not audio_data:
             raise ValueError("Audio data is empty")
-
         audio_array = np.array(audio_data, dtype=np.float32)
         if not np.isfinite(audio_array).all():
             raise ValueError("Audio data contains invalid values")
-
         temp_file: Optional[str] = None
         try:
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
                 temp_file = tmp.name
                 sf.write(tmp.name, audio_array, sample_rate, subtype='PCM_16')
-
             with sr.AudioFile(temp_file) as source:
                 audio = self.recognizer.record(source)
-
             result = self.recognizer.recognize_google(audio, language='ja-JP', show_all=True)
             transcript = ''
             confidence: Optional[float] = None
@@ -574,12 +543,11 @@ class VtuberAI:
                     confidence = primary.get('confidence')
             if not transcript:
                 transcript = self.recognizer.recognize_google(audio, language='ja-JP')
-
             return TranscriptionResponse(text=transcript, confidence=confidence)
         except sr.UnknownValueError as exc:
-            raise RuntimeError("音声を認識できませんでした") from exc
+            raise RuntimeError("髻ｳ螢ｰ繧定ｪ崎ｭ倥〒縺阪∪縺帙ｓ縺ｧ縺励◆") from exc
         except sr.RequestError as exc:
-            raise RuntimeError(f"音声認識サービスでエラーが発生しました: {exc}") from exc
+            raise RuntimeError(f"髻ｳ螢ｰ隱崎ｭ倥し繝ｼ繝薙せ縺ｧ繧ｨ繝ｩ繝ｼ縺檎匱逕溘＠縺ｾ縺励◆: {exc}") from exc
         finally:
             if temp_file and os.path.exists(temp_file):
                 try:
@@ -587,15 +555,14 @@ class VtuberAI:
                 except OSError:
                     logger.debug("Temporary audio file cleanup failed", exc_info=True)
 
-
     def cleanup(self):
-        """リソースの解放"""
-        pass  # 必要なクリーンアップ処理があれば追加
+        """繝ｪ繧ｽ繝ｼ繧ｹ縺ｮ隗｣謾ｾ"""
+        pass  # 蠢・ｦ√↑繧ｯ繝ｪ繝ｼ繝ｳ繧｢繝・・蜃ｦ逅・′縺ゅｌ縺ｰ霑ｽ蜉
 
     def setup_audio(self):
         try:
             default_device = sd.query_devices(kind='input')
-            print(f"デフォルトの入力デバイス: {default_device['name']}")
+            print(f"繝・ヵ繧ｩ繝ｫ繝医・蜈･蜉帙ョ繝舌う繧ｹ: {default_device['name']}")
             self.sample_rate = int(default_device['default_samplerate'])
             self.audio_stream = sd.InputStream(
                 device=default_device['index'],
@@ -605,7 +572,7 @@ class VtuberAI:
             )
             self.audio_stream.start()
         except Exception as e:
-            print(f"オーディオデバイスの初期化エラー: {e}")
+            print(f"繧ｪ繝ｼ繝・ぅ繧ｪ繝・ヰ繧､繧ｹ縺ｮ蛻晄悄蛹悶お繝ｩ繝ｼ: {e}")
             self.audio_stream = None
             
     def setup_speech_recognition(self):
@@ -614,18 +581,18 @@ class VtuberAI:
         self.is_listening = False
         
     def speak(self, text):
-        """テキストを音声に変換して再生"""
+        """繝・く繧ｹ繝医ｒ髻ｳ螢ｰ縺ｫ螟画鋤縺励※蜀咲函"""
         try:
-            # 音声合成が有効な場合のみ音声を生成
+            # 髻ｳ螢ｰ蜷域・縺梧怏蜉ｹ縺ｪ蝣ｴ蜷医・縺ｿ髻ｳ螢ｰ繧堤函謌・
             if self.tts:
                 self.tts.speak(text)
             else:
-                print(f"音声合成が無効なため、テキストのみを表示: {text}")
+                print(f"髻ｳ螢ｰ蜷域・縺檎┌蜉ｹ縺ｪ縺溘ａ縲√ユ繧ｭ繧ｹ繝医・縺ｿ繧定｡ｨ遉ｺ: {text}")
             
-            # 会話履歴に追加
+            # 莨夊ｩｱ螻･豁ｴ縺ｫ霑ｽ蜉
             self.conversation_history.append({"role": "assistant", "content": text})
             
-            # 感情分析
+            # 諢滓ュ蛻・梵
             emotion = self.emotion_analyzer.analyze(text)
             self.emotion_history.append(emotion)
             
@@ -635,7 +602,7 @@ class VtuberAI:
             }
             
         except Exception as e:
-            print(f"音声生成でエラーが発生: {str(e)}")
+            print(f"髻ｳ螢ｰ逕滓・縺ｧ繧ｨ繝ｩ繝ｼ縺檎匱逕・ {str(e)}")
             return {
                 "text": text,
                 "emotion": "neutral"
@@ -645,67 +612,66 @@ class VtuberAI:
         if not self.is_listening:
             self.is_listening = True
             self.recognition_thread.start()
-            print("音声認識を開始しました。話しかけてください。")
+            print("髻ｳ螢ｰ隱崎ｭ倥ｒ髢句ｧ九＠縺ｾ縺励◆縲りｩｱ縺励°縺代※縺上□縺輔＞縲・)
             
     def stop_listening(self):
         if self.is_listening:
             self.is_listening = False
             if self.recognition_thread:
                 self.recognition_thread.join()
-            print("音声認識を停止しました。")
+            print("髻ｳ螢ｰ隱崎ｭ倥ｒ蛛懈ｭ｢縺励∪縺励◆縲・)
             
     def _recognition_loop(self):
-        """音声認識ループ"""
+        """髻ｳ螢ｰ隱崎ｭ倥Ν繝ｼ繝・""
         while self.is_running:
             try:
                 with sr.Microphone() as source:
-                    print("聞き取り中...")
+                    print("閨槭″蜿悶ｊ荳ｭ...")
                     audio = self.recognizer.listen(source)
                     
                     try:
                         text = self.recognizer.recognize_google(audio, language='ja-JP')
-                        print(f"認識結果: {text}")
+                        print(f"隱崎ｭ倡ｵ先棡: {text}")
                         
-                        # 感情を分析
+                        # 諢滓ュ繧貞・譫・
                         emotion = self._analyze_emotion(text)
                         self.model.update(emotion=emotion, is_speaking=True)
                         
-                        # 応答を生成
+                        # 蠢懃ｭ斐ｒ逕滓・
                         response = self._generate_response(text, emotion)
-                        print(f"応答: {response}")
+                        print(f"蠢懃ｭ・ {response}")
                         
-                        # 音声合成
+                        # 髻ｳ螢ｰ蜷域・
                         self.tts.speak(response)
                         
-                        # 会話履歴に追加
+                        # 莨夊ｩｱ螻･豁ｴ縺ｫ霑ｽ蜉
                         self.conversation_history.append((text, response))
                         
                     except sr.UnknownValueError:
-                        print("音声を認識できませんでした")
+                        print("髻ｳ螢ｰ繧定ｪ崎ｭ倥〒縺阪∪縺帙ｓ縺ｧ縺励◆")
                     except sr.RequestError as e:
-                        print(f"音声認識サービスでエラーが発生しました: {e}")
+                        print(f"髻ｳ螢ｰ隱崎ｭ倥し繝ｼ繝薙せ縺ｧ繧ｨ繝ｩ繝ｼ縺檎匱逕溘＠縺ｾ縺励◆: {e}")
                     
             except Exception as e:
-                print(f"エラーが発生しました: {e}")
+                print(f"繧ｨ繝ｩ繝ｼ縺檎匱逕溘＠縺ｾ縺励◆: {e}")
                 time.sleep(1)
-
     def _animation_loop(self):
-        """アニメーションループ"""
+        """繧｢繝九Γ繝ｼ繧ｷ繝ｧ繝ｳ繝ｫ繝ｼ繝・""
         while self.is_running:
-            # モデルのアニメーションを更新
+            # 繝｢繝・Ν縺ｮ繧｢繝九Γ繝ｼ繧ｷ繝ｧ繝ｳ繧呈峩譁ｰ
             self.model.update()
             time.sleep(1/60)  # 60FPS
 
     def _analyze_emotion(self, text):
-        """テキストから感情を分析"""
+        """繝・く繧ｹ繝医°繧画─諠・ｒ蛻・梵"""
         text = text.lower()
-        if "嬉しい" in text or "楽しい" in text or "ありがとう" in text or "最高" in text:
+        if "螫峨＠縺・ in text or "讌ｽ縺励＞" in text or "縺ゅｊ縺後→縺・ in text or "譛鬮・ in text:
             return "happy"
-        elif "悲しい" in text or "つらい" in text or "寂しい" in text or "辛い" in text:
+        elif "謔ｲ縺励＞" in text or "縺､繧峨＞" in text or "蟇ゅ＠縺・ in text or "霎帙＞" in text:
             return "sad"
-        elif "怒" in text or "腹立" in text or "イライラ" in text:
+        elif "諤・ in text or "閻ｹ遶・ in text or "繧､繝ｩ繧､繝ｩ" in text:
             return "angry"
-        elif "驚" in text or "びっくり" in text or "えっ" in text:
+        elif "鬩・ in text or "縺ｳ縺｣縺上ｊ" in text or "縺医▲" in text:
             return "surprised"
         return "neutral"
 
@@ -761,31 +727,29 @@ class VtuberAI:
             response = self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "あなたは親しみやすいVTuberです。応答は「VTuber:」などの余計な文字を含めないでください。"},
+                    {"role": "system", "content": "縺ゅ↑縺溘・隕ｪ縺励∩繧・☆縺ХTuber縺ｧ縺吶ょｿ懃ｭ斐・縲祁Tuber:縲阪↑縺ｩ縺ｮ菴呵ｨ医↑譁・ｭ励ｒ蜷ｫ繧√↑縺・〒縺上□縺輔＞縲・},
                     {"role": "user", "content": prompt}
                 ]
             )
-
             response_text = (response.choices[0].message.content or '').strip()
-            # 余計な文字を削除
+            # 菴呵ｨ医↑譁・ｭ励ｒ蜑企勁
             response_text = response_text.replace("VTuber:", "").strip()
             
-            # 応答の評価
+            # 蠢懃ｭ斐・隧穂ｾ｡
             reward = self.bandit.evaluate_response(response_text, text)
-            print(f"応答評価スコア: {reward:.2f}")
+            print(f"蠢懃ｭ碑ｩ穂ｾ｡繧ｹ繧ｳ繧｢: {reward:.2f}")
             self.bandit.update(topic_idx, reward, features=bandit_features)
             
-            # 会話履歴に追加
+            # 莨夊ｩｱ螻･豁ｴ縺ｫ霑ｽ蜉
             self.bandit.add_to_history(text, response_text, selected_topic)
             
-            # 感情表現を適用
+            # 諢滓ュ陦ｨ迴ｾ繧帝←逕ｨ
             emotion_expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
             if hasattr(self, 'model') and getattr(self, 'model') is not None:
                 try:
                     self.model.update_expression(emotion_expression)  # type: ignore[attr-defined]
                 except Exception as exc:
                     logger.debug("Failed to update model expression: %s", exc)
-
             self._append_conversation_entry(text, response_text, emotion_data)
             
             return response_text
@@ -793,38 +757,36 @@ class VtuberAI:
         except Exception as e:
             logger.error("LLM response generation failed: %s", e)
             return self._fallback_response(text, emotion, emotion_data, selected_topic)
-
     def process_audio(self):
         if self.audio_stream is None:
             return np.zeros(1024)
         try:
             data, overflowed = self.audio_stream.read(1024)
             if overflowed:
-                print("オーディオバッファのオーバーフロー")
-            # 音声の強さを計算
+                print("繧ｪ繝ｼ繝・ぅ繧ｪ繝舌ャ繝輔ぃ縺ｮ繧ｪ繝ｼ繝舌・繝輔Ο繝ｼ")
+            # 髻ｳ螢ｰ縺ｮ蠑ｷ縺輔ｒ險育ｮ・
             volume = np.abs(data).mean()
-            if volume > 0.01:  # この閾値は環境に応じて調整してください
-                print(f"音声入力検出: {volume:.4f}")
+            if volume > 0.01:  # 縺薙・髢ｾ蛟､縺ｯ迺ｰ蠅・↓蠢懊§縺ｦ隱ｿ謨ｴ縺励※縺上□縺輔＞
+                print(f"髻ｳ螢ｰ蜈･蜉帶､懷・: {volume:.4f}")
             return data
         except Exception as e:
-            print(f"音声処理エラー: {e}")
+            print(f"髻ｳ螢ｰ蜃ｦ逅・お繝ｩ繝ｼ: {e}")
             return np.zeros(1024)
-
     def start(self):
-        """Vtuber AIを開始"""
-        print("Vtuber AIを開始します...")
+        """Vtuber AI繧帝幕蟋・""
+        print("Vtuber AI繧帝幕蟋九＠縺ｾ縺・..")
         
-        # スレッドを開始
+        # 繧ｹ繝ｬ繝・ラ繧帝幕蟋・
         self.recognition_thread.start()
         self.animation_thread.start()
         
-        # メインループ
+        # 繝｡繧､繝ｳ繝ｫ繝ｼ繝・
         try:
             while self.is_running:
-                # モデルの描画
+                # 繝｢繝・Ν縺ｮ謠冗判
                 self.model.render()
                 
-                # イベント処理
+                # 繧､繝吶Φ繝亥・逅・
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         self.is_running = False
@@ -833,100 +795,96 @@ class VtuberAI:
                             self.is_running = False
         finally:
             self.cleanup()
-
     def record_audio(self):
-        """音声を録音してキューに追加"""
+        """髻ｳ螢ｰ繧帝鹸髻ｳ縺励※繧ｭ繝･繝ｼ縺ｫ霑ｽ蜉"""
         def audio_callback(indata, frames, time, status):
             if status:
-                print(f"録音エラー: {status}")
+                print(f"骭ｲ髻ｳ繧ｨ繝ｩ繝ｼ: {status}")
             self.audio_queue.put(indata.copy())
         
         with sd.InputStream(samplerate=self.sample_rate, channels=1,
                           dtype=np.float32, callback=audio_callback):
-            print("録音を開始します...")
+            print("骭ｲ髻ｳ繧帝幕蟋九＠縺ｾ縺・..")
             while self.is_running:
                 time.sleep(0.1)
     
     def process_audio_from_stream(self):
-        """録音された音声を処理"""
+        """骭ｲ髻ｳ縺輔ｌ縺滄浹螢ｰ繧貞・逅・""
         while self.is_running:
             if not self.audio_queue.empty():
                 audio_data = self.audio_queue.get()
-                # 音声データを処理
+                # 髻ｳ螢ｰ繝・・繧ｿ繧貞・逅・
                 self.model.process_audio(audio_data)
     
     def generate_response(self, user_input):
-        """ユーザーの入力に対する応答を生成"""
-        # 感情分析
+        """繝ｦ繝ｼ繧ｶ繝ｼ縺ｮ蜈･蜉帙↓蟇ｾ縺吶ｋ蠢懃ｭ斐ｒ逕滓・"""
+        # 諢滓ュ蛻・梵
         emotion_data = self.emotion_analyzer.analyze_emotion(user_input)
         self.emotion_history.append(emotion_data)
         
-        # 感情表現の生成
+        # 諢滓ュ陦ｨ迴ｾ縺ｮ逕滓・
         emotion_expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
         
-        # 会話の文脈を取得
+        # 莨夊ｩｱ縺ｮ譁・ц繧貞叙蠕・
         context = self._get_conversation_context()
-
         bandit_features = {
             'context_text': context,
             'emotion': emotion_data,
             'user_input': user_input,
         }
 
-        # トピックを選択
+        # 繝医ヴ繝・け繧帝∈謚・
         topic_idx, selected_topic = self.bandit.select_topic(context=context, features=bandit_features)
         self.current_topic = selected_topic
 
-        # サブトピックを生成
+        # 繧ｵ繝悶ヨ繝斐ャ繧ｯ繧堤函謌・
         subtopics = self.bandit.generate_subtopics(selected_topic)
         bandit_features['subtopics'] = subtopics
         
-        # プロンプトの作成
+        # 繝励Ο繝ｳ繝励ヨ縺ｮ菴懈・
         prompt = f"""
-        トピック「{selected_topic}」について、以下のユーザーの発言に対して応答してください。
+        繝医ヴ繝・け縲鶏selected_topic}縲阪↓縺､縺・※縲∽ｻ･荳九・繝ｦ繝ｼ繧ｶ繝ｼ縺ｮ逋ｺ險縺ｫ蟇ｾ縺励※蠢懃ｭ斐＠縺ｦ縺上□縺輔＞縲・
         
-        ユーザーの感情状態：
-        - 主要な感情：{', '.join(emotion_data['primary_emotions'])}
-        - 感情の強度：{emotion_data['intensity']}
-        - 感情の組み合わせ：{emotion_data['emotion_combination']}
-        - 感情の変化：{emotion_data['emotion_change']}
+        繝ｦ繝ｼ繧ｶ繝ｼ縺ｮ諢滓ュ迥ｶ諷具ｼ・
+        - 荳ｻ隕√↑諢滓ュ・嘴', '.join(emotion_data['primary_emotions'])}
+        - 諢滓ュ縺ｮ蠑ｷ蠎ｦ・嘴emotion_data['intensity']}
+        - 諢滓ュ縺ｮ邨・∩蜷医ｏ縺幢ｼ嘴emotion_data['emotion_combination']}
+        - 諢滓ュ縺ｮ螟牙喧・嘴emotion_data['emotion_change']}
         
-        関連するサブトピック：
+        髢｢騾｣縺吶ｋ繧ｵ繝悶ヨ繝斐ャ繧ｯ・・
         {', '.join(subtopics)}
 
-        ユーザーの発言：{user_input}
+        繝ｦ繝ｼ繧ｶ繝ｼ縺ｮ逋ｺ險・嘴user_input}
 
-        以下の点に注意して応答してください：
-        1. ユーザーの感情状態に共感する
-        2. 自然な会話の流れを維持する
-        3. 感情表現を豊かに使用する
-        4. 会話を発展させる質問を含める
-        5. サブトピックを自然に取り入れる
+        莉･荳九・轤ｹ縺ｫ豕ｨ諢上＠縺ｦ蠢懃ｭ斐＠縺ｦ縺上□縺輔＞・・
+        1. 繝ｦ繝ｼ繧ｶ繝ｼ縺ｮ諢滓ュ迥ｶ諷九↓蜈ｱ諢溘☆繧・
+        2. 閾ｪ辟ｶ縺ｪ莨夊ｩｱ縺ｮ豬√ｌ繧堤ｶｭ謖√☆繧・
+        3. 諢滓ュ陦ｨ迴ｾ繧定ｱ翫°縺ｫ菴ｿ逕ｨ縺吶ｋ
+        4. 莨夊ｩｱ繧堤匱螻輔＆縺帙ｋ雉ｪ蝠上ｒ蜷ｫ繧√ｋ
+        5. 繧ｵ繝悶ヨ繝斐ャ繧ｯ繧定・辟ｶ縺ｫ蜿悶ｊ蜈･繧後ｋ
         """
 
         if self.openai_client is None:
             logger.warning("VtuberAI: OpenAI client is unavailable; using fallback response.")
             return self._fallback_response(user_input, self._analyze_emotion(user_input), emotion_data, selected_topic)
-
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "あなたは親しみやすいVTuberです。"},
+                    {"role": "system", "content": "縺ゅ↑縺溘・隕ｪ縺励∩繧・☆縺ХTuber縺ｧ縺吶・},
                     {"role": "user", "content": prompt}
                 ]
             )
-
             response_text = response.choices[0].message.content or ''
             
-            # 応答の評価
+            # 蠢懃ｭ斐・隧穂ｾ｡
             reward = self.bandit.evaluate_response(response_text, user_input)
             self.bandit.update(topic_idx, reward, features=bandit_features)
             
-            # 会話履歴に追加
+            # 莨夊ｩｱ螻･豁ｴ縺ｫ霑ｽ蜉
             self.bandit.add_to_history(user_input, response_text, selected_topic)
             
-            # 感情表現を適用
+            # 諢滓ュ陦ｨ迴ｾ繧帝←逕ｨ
             if hasattr(self, 'model') and getattr(self, 'model') is not None:
                 try:
                     self.model.update_expression(emotion_expression)  # type: ignore[attr-defined]
@@ -938,7 +896,7 @@ class VtuberAI:
             return response_text
             
         except Exception as e:
-            print(f"エラーが発生しました: {e}")
+            print(f"繧ｨ繝ｩ繝ｼ縺檎匱逕溘＠縺ｾ縺励◆: {e}")
             logger.error("LLM response generation failed: %s", e)
             return self._fallback_response(user_input, self._analyze_emotion(user_input), emotion_data, selected_topic)
     
@@ -958,6 +916,5 @@ class VtuberAI:
             if assistant_text:
                 lines.append(f'RecoMate: {assistant_text}')
         return '\n'.join(lines)
-
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
