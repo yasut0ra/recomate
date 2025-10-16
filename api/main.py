@@ -61,6 +61,7 @@ except Exception as exc:
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
 from .emotion_analyzer import EmotionAnalyzer
 from .dependencies import SessionDep
+from .services.consent import get_consent_setting, update_consent_setting
 from .services.memory import commit_memory, search_memories
 from .services.rituals import get_morning_ritual, get_night_ritual
 from .topic_bandit import TopicBandit
@@ -155,6 +156,23 @@ class MemoryCommitRequest(BaseModel):
     keywords: Optional[List[str]] = None
     pinned: bool = False
 
+
+class ConsentResponseModel(BaseModel):
+    user_id: UUID
+    night_mode: bool
+    push_intensity: str
+    private_topics: List[str]
+    learning_paused: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ConsentUpdateRequest(BaseModel):
+    night_mode: Optional[bool] = None
+    push_intensity: Optional[str] = None
+    private_topics: Optional[List[str]] = None
+    learning_paused: Optional[bool] = None
+
 @app.get("/")
 async def root():
     return {"message": "Recomate API Server is running"}
@@ -228,6 +246,33 @@ def memory_search(
         logger.exception("Failed to search memories: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to search memories")
     return [MemoryResponseModel.model_validate(item) for item in memories]
+
+
+@app.get("/api/consent", response_model=ConsentResponseModel)
+def get_consent(
+    session: SessionDep,
+    user_id: UUID = Query(..., description="User ID whose consent settings should be retrieved."),
+):
+    try:
+        record = get_consent_setting(session=session, user_id=user_id)
+    except Exception as exc:
+        logger.exception("Failed to fetch consent settings: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to fetch consent settings")
+    return ConsentResponseModel.model_validate(record)
+
+
+@app.patch("/api/consent", response_model=ConsentResponseModel)
+def patch_consent(
+    payload: ConsentUpdateRequest,
+    session: SessionDep,
+    user_id: UUID = Query(..., description="User ID whose consent settings should be updated."),
+):
+    try:
+        record = update_consent_setting(session=session, user_id=user_id, updates=payload.model_dump(exclude_unset=True))
+    except Exception as exc:
+        logger.exception("Failed to update consent settings: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to update consent settings")
+    return ConsentResponseModel.model_validate(record)
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
     if vtuber is None:
