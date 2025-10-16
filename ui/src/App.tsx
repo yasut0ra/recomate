@@ -6,6 +6,7 @@ import { ChatProvider } from './context/ChatContext';
 import RitualPanel from './components/RitualPanel';
 import MemoryPanel from './components/MemoryPanel';
 import AgentRequestPanel from './components/AgentRequestPanel';
+import MoodPanel from './components/MoodPanel';
 import './App.css';
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
         </main>
         <RitualPanel />
         <MemoryPanel />
+        <MoodPanel />
         <AgentRequestPanel />
       </div>
     </ChatProvider>
