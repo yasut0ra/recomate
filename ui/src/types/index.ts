@@ -72,3 +72,13 @@ export interface AlbumWeeklyResponse {
   quote_best?: string | null;
   created_at: string;
 }
+
+export interface MemoryRecord {
+  id: string;
+  user_id: string;
+  summary_md: string;
+  keywords: string[];
+  pinned: boolean;
+  created_at: string;
+  last_ref?: string | null;
+}
