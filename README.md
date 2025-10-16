@@ -64,3 +64,4 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 - **儀式**: `GET /api/rituals/morning?mood=%E9%99%BD%E6%B0%97`（朝）/`GET /api/rituals/night?mood=%E5%BF%83%E9%85%8D`（夜）
 - **メモリ書き戻し**: `POST /api/memory/commit` Body `{"episode_id": "...", "summary": "...", "keywords": ["..."], "pinned": false}`
 - **メモリ検索**: `GET /api/memory/search?q=keyword&user_id=<uuid>&limit=20`
+- **同意設定**: `GET /api/consent?user_id=<uuid>` / `PATCH /api/consent?user_id=<uuid>` Body `{"night_mode": true, ...}`
