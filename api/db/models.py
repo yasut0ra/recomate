@@ -7,14 +7,16 @@ from datetime import datetime
 from typing import List, Optional
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
 
 
-UUID_PK = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+def uuid_pk_column() -> Mapped[uuid.UUID]:
+    """Return a new UUID primary key column."""
+    return mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
 
 class User(Base):
@@ -22,7 +24,7 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = UUID_PK  # type: ignore[assignment]
+    id: Mapped[uuid.UUID] = uuid_pk_column()
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Tokyo")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
@@ -36,13 +38,13 @@ class Episode(Base):
 
     __tablename__ = "episodes"
 
-    id: Mapped[uuid.UUID] = UUID_PK  # type: ignore[assignment]
+    id: Mapped[uuid.UUID] = uuid_pk_column()
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     mood_user: Mapped[Optional[str]] = mapped_column(Text)
     mood_ai: Mapped[Optional[str]] = mapped_column(Text)
-    tags: Mapped[List[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'::text[]"))
+    tags: Mapped[List[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=sa.text("'{}'::text[]"))
 
     user: Mapped[User] = relationship(back_populates="episodes")
 
@@ -52,10 +54,10 @@ class Memory(Base):
 
     __tablename__ = "memories"
 
-    id: Mapped[uuid.UUID] = UUID_PK  # type: ignore[assignment]
+    id: Mapped[uuid.UUID] = uuid_pk_column()
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     summary_md: Mapped[str] = mapped_column(Text, nullable=False)
-    keywords: Mapped[List[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'::text[]"))
+    keywords: Mapped[List[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=sa.text("'{}'::text[]"))
     last_ref: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa.text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa.func.now())
@@ -89,7 +91,7 @@ class MoodLog(Base):
 
     __tablename__ = "mood_logs"
 
-    id: Mapped[uuid.UUID] = UUID_PK  # type: ignore[assignment]
+    id: Mapped[uuid.UUID] = uuid_pk_column()
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa.func.now())
     state: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -135,7 +137,7 @@ class ConsentSetting(Base):
     )
     night_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa.text("true"))
     push_intensity: Mapped[str] = mapped_column(String(32), nullable=False, server_default=sa.text("'soft'"))
-    private_topics: Mapped[List[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'::text[]"))
+    private_topics: Mapped[List[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=sa.text("'{}'::text[]"))
     learning_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa.text("false"))
 
 
@@ -159,10 +161,9 @@ class AgentRequest(Base):
 
     __tablename__ = "agent_requests"
 
-    id: Mapped[uuid.UUID] = UUID_PK  # type: ignore[assignment]
+    id: Mapped[uuid.UUID] = uuid_pk_column()
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[Optional[dict]] = mapped_column(JSONB)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa.func.now())
     accepted: Mapped[Optional[bool]] = mapped_column(Boolean)
-
