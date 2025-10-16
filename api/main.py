@@ -9,15 +9,16 @@ import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import asdict
+from typing import Any, Dict, List, Optional, Tuple, Literal
+from uuid import UUID
 
 import numpy as np
 import soundfile as sf
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi import APIRouter
 from openai import OpenAI
 from pydantic import BaseModel, Field
 import uvicorn
@@ -58,6 +59,8 @@ except Exception as exc:
     VtuberModel = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
 from .emotion_analyzer import EmotionAnalyzer
+from .dependencies import SessionDep
+from .services.rituals import get_morning_ritual, get_night_ritual
 from .topic_bandit import TopicBandit
 
 
@@ -118,6 +121,19 @@ class TranscriptionResponse(BaseModel):
     text: str
     confidence: Optional[float] = None
 
+
+class RitualEventModel(BaseModel):
+    event: str
+    value: str
+
+
+class RitualResponseModel(BaseModel):
+    period: Literal["morning", "night"]
+    mood: str
+    script: str
+    events: List[RitualEventModel]
+    source: Literal["default", "custom"]
+
 @app.get("/")
 async def root():
     return {"message": "Recomate API Server is running"}
@@ -138,6 +154,26 @@ async def topic_stats():
     except Exception as exc:
         logger.exception("Failed to collect topic stats: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/rituals/morning", response_model=RitualResponseModel)
+def fetch_morning_ritual(
+    session: SessionDep,
+    mood: str = Query("穏やか", description="Desired mood variant for the ritual script."),
+    user_id: Optional[UUID] = Query(None, description="User ID for personalised rituals."),
+):
+    plan = get_morning_ritual(session=session, mood=mood, user_id=user_id)
+    return RitualResponseModel(**asdict(plan))
+
+
+@app.get("/api/rituals/night", response_model=RitualResponseModel)
+def fetch_night_ritual(
+    session: SessionDep,
+    mood: str = Query("穏やか", description="Desired mood variant for the ritual script."),
+    user_id: Optional[UUID] = Query(None, description="User ID for personalised rituals."),
+):
+    plan = get_night_ritual(session=session, mood=mood, user_id=user_id)
+    return RitualResponseModel(**asdict(plan))
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
     if vtuber is None:
@@ -661,4 +697,3 @@ class VtuberAI:
         return '\n'.join(lines)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-

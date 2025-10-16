@@ -2,6 +2,10 @@ numpy>=1.26.0
 opencv-python>=4.8.0.76
 pygame>=2.5.0
 pillow>=10.0.0
+PyYAML>=6.0.2
+SQLAlchemy>=2.0.30
+alembic>=1.13.1
+psycopg[binary]>=3.1.19
 
 sounddevice>=0.4.6
 soundfile>=0.12.1
