@@ -47,3 +47,28 @@ export interface TranscriptionResponse {
   text: string;
   confidence?: number;
 }
+
+export type RitualPeriod = 'morning' | 'night';
+
+export interface RitualEvent {
+  event: string;
+  value: string;
+}
+
+export interface RitualResponse {
+  period: RitualPeriod;
+  mood: string;
+  script: string;
+  events: RitualEvent[];
+  source: 'default' | 'custom';
+}
+
+export interface AlbumWeeklyResponse {
+  week_id: string;
+  user_id: string;
+  highlights_json: Record<string, unknown>;
+  wins_json: Record<string, unknown>;
+  photos: Record<string, unknown>;
+  quote_best?: string | null;
+  created_at: string;
+}
