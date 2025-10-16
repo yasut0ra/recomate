@@ -19,9 +19,8 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 1. Python の仮想環境を作成し、依存関係をインストールします。
 
    ```bash
-   cd recomate
    python -m venv venv
-   venv\Scripts\activate  # macOS/Linux の場合は source venv/bin/activate
+   source venv/bin/activate        # Windows の場合は venv\Scripts\activate
    pip install -r api/requirements.txt
    ```
 
@@ -45,3 +44,17 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 4. Electron で実行する場合は、FastAPI が `http://127.0.0.1:8000` で稼働していることを確認してください。
 
 > 旧来の Node/Express サーバーは廃止しました。バックエンドは Python/FastAPI に統一されています。
+
+## データベース / マイグレーション
+
+- Postgres をローカルに用意し、`DATABASE_URL`（例: `postgresql+psycopg://postgres:postgres@localhost:5432/recomate`）を `.env` に設定します。
+- 初期スキーマは Alembic で管理しています。
+  ```bash
+  # 初回
+  alembic upgrade head
+
+  # 変更時（例）
+  alembic revision -m "add new table"
+  alembic upgrade head
+  ```
+- `alembic.ini` の `sqlalchemy.url` はフォールバック用です。環境変数が優先されます。
