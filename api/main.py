@@ -61,6 +61,7 @@ except Exception as exc:
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
 from .emotion_analyzer import EmotionAnalyzer
 from .dependencies import SessionDep
+from .services.album import generate_weekly_album
 from .services.consent import get_consent_setting, update_consent_setting
 from .services.memory import commit_memory, search_memories
 from .services.rituals import get_morning_ritual, get_night_ritual
@@ -173,6 +174,24 @@ class ConsentUpdateRequest(BaseModel):
     private_topics: Optional[List[str]] = None
     learning_paused: Optional[bool] = None
 
+
+class AlbumGenerateRequest(BaseModel):
+    user_id: UUID
+    week_id: Optional[str] = None
+    regenerate: bool = False
+
+
+class AlbumWeeklyResponseModel(BaseModel):
+    week_id: str
+    user_id: UUID
+    highlights: Dict[str, Any] = Field(alias="highlights_json")
+    wins: Dict[str, Any] = Field(alias="wins_json")
+    photos: Dict[str, Any]
+    quote_best: Optional[str]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
 @app.get("/")
 async def root():
     return {"message": "Recomate API Server is running"}
@@ -273,6 +292,23 @@ def patch_consent(
         logger.exception("Failed to update consent settings: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to update consent settings")
     return ConsentResponseModel.model_validate(record)
+
+
+@app.post("/api/album/weekly/generate", response_model=AlbumWeeklyResponseModel)
+def generate_weekly_album_endpoint(payload: AlbumGenerateRequest, session: SessionDep):
+    try:
+        record = generate_weekly_album(
+            session=session,
+            user_id=payload.user_id,
+            week_id=payload.week_id,
+            regenerate=payload.regenerate,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to generate weekly album: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to generate weekly album")
+    return AlbumWeeklyResponseModel.model_validate(record)
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
     if vtuber is None:
