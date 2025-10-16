@@ -82,3 +82,12 @@ export interface MemoryRecord {
   created_at: string;
   last_ref?: string | null;
 }
+
+export interface AgentRequestRecord {
+  id: string;
+  user_id: string;
+  kind: string;
+  payload?: Record<string, unknown> | null;
+  ts: string;
+  accepted?: boolean | null;
+}

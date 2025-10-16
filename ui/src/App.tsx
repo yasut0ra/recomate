@@ -5,6 +5,7 @@ import InputSection from './components/InputSection';
 import { ChatProvider } from './context/ChatContext';
 import RitualPanel from './components/RitualPanel';
 import MemoryPanel from './components/MemoryPanel';
+import AgentRequestPanel from './components/AgentRequestPanel';
 import './App.css';
 
 function App() {
@@ -19,6 +20,7 @@ function App() {
         </main>
         <RitualPanel />
         <MemoryPanel />
+        <AgentRequestPanel />
       </div>
     </ChatProvider>
   );

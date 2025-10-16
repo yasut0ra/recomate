@@ -61,6 +61,7 @@ except Exception as exc:
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
 from .emotion_analyzer import EmotionAnalyzer
 from .dependencies import SessionDep
+from .services.agent_requests import acknowledge_agent_request, generate_agent_request
 from .services.album import generate_weekly_album
 from .services.consent import get_consent_setting, update_consent_setting
 from .services.memory import commit_memory, search_memories
@@ -192,6 +193,28 @@ class AlbumWeeklyResponseModel(BaseModel):
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
+
+class AgentRequestResponseModel(BaseModel):
+    id: UUID
+    user_id: UUID
+    kind: str
+    payload: Dict[str, Any] | None
+    ts: datetime
+    accepted: Optional[bool]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentRequestGenerateBody(BaseModel):
+    user_id: UUID
+    force: bool = False
+
+
+class AgentRequestAcknowledgeBody(BaseModel):
+    request_id: UUID
+    accepted: bool
+    reason: Optional[str] = None
+
 @app.get("/")
 async def root():
     return {"message": "Recomate API Server is running"}
@@ -309,6 +332,37 @@ def generate_weekly_album_endpoint(payload: AlbumGenerateRequest, session: Sessi
         logger.exception("Failed to generate weekly album: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to generate weekly album")
     return AlbumWeeklyResponseModel.model_validate(record)
+
+
+@app.post("/api/agent/request", response_model=AgentRequestResponseModel)
+def agent_request(payload: AgentRequestGenerateBody, session: SessionDep):
+    try:
+        record = generate_agent_request(
+            session=session,
+            user_id=payload.user_id,
+            force=payload.force,
+        )
+    except Exception as exc:
+        logger.exception("Failed to generate agent request: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to generate agent request")
+    return AgentRequestResponseModel.model_validate(record)
+
+
+@app.post("/api/agent/ack", response_model=AgentRequestResponseModel)
+def agent_acknowledge(payload: AgentRequestAcknowledgeBody, session: SessionDep):
+    try:
+        record = acknowledge_agent_request(
+            session=session,
+            request_id=payload.request_id,
+            accepted=payload.accepted,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to acknowledge agent request: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to acknowledge agent request")
+    return AgentRequestResponseModel.model_validate(record)
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
     if vtuber is None:
