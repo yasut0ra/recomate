@@ -66,3 +66,7 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 - **メモリ検索**: `GET /api/memory/search?q=keyword&user_id=<uuid>&limit=20`
 - **同意設定**: `GET /api/consent?user_id=<uuid>` / `PATCH /api/consent?user_id=<uuid>` Body `{"night_mode": true, ...}`
 - **週次アルバム**: `POST /api/album/weekly/generate` Body `{"user_id": "...", "week_id": "2025-W42", "regenerate": false}`
+
+## フロントエンド補足
+
+- `npm run dev` で起動後、画面下部の「リチュアルプレビュー」から `/api/rituals/*` を利用した朝/夜スクリプトと Live2D イベントの事前確認ができます。
