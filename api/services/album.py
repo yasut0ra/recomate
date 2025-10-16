@@ -78,7 +78,7 @@ def generate_weekly_album(
 ) -> AlbumWeekly:
     resolved_week_id, week_start, week_end = _resolve_reference_datetime(week_id)
 
-    existing = session.get(AlbumWeekly, {"week_id": resolved_week_id, "user_id": user_id})
+    existing = session.get(AlbumWeekly, (resolved_week_id, user_id))
     if existing and not regenerate:
         return existing
 
