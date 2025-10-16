@@ -58,3 +58,9 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
   alembic upgrade head
   ```
 - `alembic.ini` の `sqlalchemy.url` はフォールバック用です。環境変数が優先されます。
+
+## API スニペット
+
+- **儀式**: `GET /api/rituals/morning?mood=%E9%99%BD%E6%B0%97`（朝）/`GET /api/rituals/night?mood=%E5%BF%83%E9%85%8D`（夜）
+- **メモリ書き戻し**: `POST /api/memory/commit` Body `{"episode_id": "...", "summary": "...", "keywords": ["..."], "pinned": false}`
+- **メモリ検索**: `GET /api/memory/search?q=keyword&user_id=<uuid>&limit=20`

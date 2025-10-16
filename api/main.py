@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple, Literal
 from uuid import UUID
@@ -20,7 +21,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import uvicorn
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ except Exception as exc:
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
 from .emotion_analyzer import EmotionAnalyzer
 from .dependencies import SessionDep
+from .services.memory import commit_memory, search_memories
 from .services.rituals import get_morning_ritual, get_night_ritual
 from .topic_bandit import TopicBandit
 
@@ -134,6 +136,25 @@ class RitualResponseModel(BaseModel):
     events: List[RitualEventModel]
     source: Literal["default", "custom"]
 
+
+class MemoryResponseModel(BaseModel):
+    id: UUID
+    user_id: UUID
+    summary_md: str
+    keywords: List[str]
+    pinned: bool
+    created_at: datetime
+    last_ref: Optional[datetime]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MemoryCommitRequest(BaseModel):
+    episode_id: UUID
+    summary: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    pinned: bool = False
+
 @app.get("/")
 async def root():
     return {"message": "Recomate API Server is running"}
@@ -174,6 +195,39 @@ def fetch_night_ritual(
 ):
     plan = get_night_ritual(session=session, mood=mood, user_id=user_id)
     return RitualResponseModel(**asdict(plan))
+
+
+@app.post("/api/memory/commit", response_model=MemoryResponseModel)
+def memory_commit(payload: MemoryCommitRequest, session: SessionDep):
+    try:
+        memory = commit_memory(
+            session=session,
+            episode_id=payload.episode_id,
+            summary_override=payload.summary,
+            keywords_override=payload.keywords,
+            pinned=payload.pinned,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to commit memory: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to commit memory")
+    return MemoryResponseModel.model_validate(memory)
+
+
+@app.get("/api/memory/search", response_model=List[MemoryResponseModel])
+def memory_search(
+    session: SessionDep,
+    q: Optional[str] = Query(None, description="Free text query to match summary or keywords."),
+    user_id: Optional[UUID] = Query(None, description="Restrict results to a specific user."),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of memories to return."),
+):
+    try:
+        memories = search_memories(session=session, user_id=user_id, query=q, limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to search memories: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to search memories")
+    return [MemoryResponseModel.model_validate(item) for item in memories]
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
     if vtuber is None:
