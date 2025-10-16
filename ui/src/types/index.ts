@@ -91,3 +91,18 @@ export interface AgentRequestRecord {
   ts: string;
   accepted?: boolean | null;
 }
+
+export interface MoodStateResponse {
+  user_id: string;
+  state: string;
+  previous_state?: string | null;
+  trigger?: string | null;
+  weights: Record<string, unknown>;
+  history: Array<Record<string, unknown>>;
+}
+
+export interface MoodHistoryResponse {
+  user_id: string;
+  current_state: string;
+  history: Array<Record<string, unknown>>;
+}

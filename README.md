@@ -67,11 +67,13 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 - **同意設定**: `GET /api/consent?user_id=<uuid>` / `PATCH /api/consent?user_id=<uuid>` Body `{"night_mode": true, ...}`
 - **週次アルバム**: `POST /api/album/weekly/generate` Body `{"user_id": "...", "week_id": "2025-W42", "regenerate": false}`
 - **Agentリクエスト**: `POST /api/agent/request` Body `{"user_id": "...", "force": false}` / `POST /api/agent/ack` Body `{"request_id": "...", "accepted": true, "reason": "..."}`
+- **ムード遷移**: `POST /api/mood/transition` Body `{"user_id": "...", "trigger": "success"}` / `GET /api/mood/history?user_id=<uuid>&limit=10`
 
 ## フロントエンド補足
 
 - `npm run dev` で起動後、画面下部の「リチュアルプレビュー」から `/api/rituals/*` を利用した朝/夜スクリプトと Live2D イベントの事前確認ができます。
 - 「メモリ透明パネル」では `/api/memory/commit` と `/api/memory/search` を利用してエピソードの書き戻し・検索が可能です（Episode ID の事前登録が必要）。
+- 「ムードマシン」パネルから `/api/mood/transition` と `/api/mood/history` を呼び出して状態遷移を確認できます。
 
 ## UI アクションログ
 - Agent Request パネルが追加され、`/api/agent/request` の生成と `/api/agent/ack` で応答を返すデモが行えます。

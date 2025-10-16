@@ -61,10 +61,12 @@ except Exception as exc:
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
 from .emotion_analyzer import EmotionAnalyzer
 from .dependencies import SessionDep
+from .db.models import MoodLog
 from .services.agent_requests import acknowledge_agent_request, generate_agent_request
 from .services.album import generate_weekly_album
 from .services.consent import get_consent_setting, update_consent_setting
 from .services.memory import commit_memory, search_memories
+from .services.mood import get_recent_moods, transition_mood
 from .services.rituals import get_morning_ritual, get_night_ritual
 from .topic_bandit import TopicBandit
 
@@ -215,6 +217,26 @@ class AgentRequestAcknowledgeBody(BaseModel):
     accepted: bool
     reason: Optional[str] = None
 
+
+class MoodTransitionRequest(BaseModel):
+    user_id: UUID
+    trigger: Optional[str] = None
+
+
+class MoodStateResponse(BaseModel):
+    user_id: UUID
+    state: str
+    previous_state: Optional[str] = None
+    trigger: Optional[str] = None
+    weights: Dict[str, Any]
+    history: List[Dict[str, Any]]
+
+
+class MoodHistoryResponse(BaseModel):
+    user_id: UUID
+    current_state: str
+    history: List[Dict[str, Any]]
+
 @app.get("/")
 async def root():
     return {"message": "Recomate API Server is running"}
@@ -363,6 +385,64 @@ def agent_acknowledge(payload: AgentRequestAcknowledgeBody, session: SessionDep)
         logger.exception("Failed to acknowledge agent request: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to acknowledge agent request")
     return AgentRequestResponseModel.model_validate(record)
+
+
+@app.post("/api/mood/transition", response_model=MoodStateResponse)
+def mood_transition(payload: MoodTransitionRequest, session: SessionDep):
+    try:
+        log_entry = transition_mood(session=session, user_id=payload.user_id, trigger=payload.trigger)
+        previous = (
+            session.execute(
+                sa.select(MoodLog)
+                .where(MoodLog.user_id == payload.user_id, MoodLog.ts < log_entry.ts)
+                .order_by(MoodLog.ts.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        history = [
+            {
+                "state": log_entry.state,
+                "trigger": log_entry.trigger,
+                "ts": log_entry.ts,
+                "weights": log_entry.weight_map_json,
+            }
+        ]
+        return MoodStateResponse(
+            user_id=payload.user_id,
+            state=log_entry.state,
+            previous_state=previous.state if previous else None,
+            trigger=payload.trigger,
+            weights=log_entry.weight_map_json or {},
+            history=history,
+        )
+    except Exception as exc:
+        logger.exception("Failed to transition mood: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to transition mood")
+
+
+@app.get("/api/mood/history", response_model=MoodHistoryResponse)
+def mood_history(
+    session: SessionDep,
+    user_id: UUID = Query(..., description="User ID whose mood logs should be fetched."),
+    limit: int = Query(10, ge=1, le=50, description="Maximum number of mood logs to return."),
+):
+    try:
+        current_state, logs = get_recent_moods(session=session, user_id=user_id, limit=limit)
+        history = [
+            {
+                "state": log.state,
+                "trigger": log.trigger,
+                "ts": log.ts,
+                "weights": log.weight_map_json,
+            }
+            for log in logs
+        ]
+        return MoodHistoryResponse(user_id=user_id, current_state=current_state, history=history)
+    except Exception as exc:
+        logger.exception("Failed to fetch mood history: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to fetch mood history")
 @app.post("/api/chat")
 async def chat(input_data: TextInput):
     if vtuber is None:
