@@ -70,3 +70,4 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 ## フロントエンド補足
 
 - `npm run dev` で起動後、画面下部の「リチュアルプレビュー」から `/api/rituals/*` を利用した朝/夜スクリプトと Live2D イベントの事前確認ができます。
+- 「メモリ透明パネル」では `/api/memory/commit` と `/api/memory/search` を利用してエピソードの書き戻し・検索が可能です（Episode ID の事前登録が必要）。
