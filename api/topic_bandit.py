@@ -11,7 +11,16 @@ logger = logging.getLogger(__name__)
 class TopicBandit:
     """LinUCB-based multi-armed bandit for topic recommendation."""
 
-    def __init__(self, topics: List[str], alpha: float = 0.1, client: Optional[OpenAI] = None):
+    def __init__(
+        self,
+        topics: List[str],
+        alpha: float = 0.1,
+        client: Optional[OpenAI] = None,
+        recency_window: float = 180.0,
+        recency_penalty: float = 0.4,
+        frequency_penalty: float = 0.3,
+        min_exploration_probability: float = 0.05,
+    ):
         self.topics = topics
         self.n_topics = len(topics)
         self.conversation_history: List[Dict] = []
@@ -35,6 +44,12 @@ class TopicBandit:
         self._last_contexts: Dict[int, str] = {}
         self._last_features: Dict[int, Dict[str, Any]] = {}
         self.subtopic_cache: Dict[str, List[str]] = {topic: [] for topic in topics}
+        self.recency_window = max(recency_window, 1.0)
+        self.recency_penalty = max(recency_penalty, 0.0)
+        self.frequency_penalty = max(frequency_penalty, 0.0)
+        self.min_exploration_probability = max(min_exploration_probability, 0.0)
+        self.recent_topic_buffer: List[int] = []
+        self.recent_buffer_size = 5
 
         self.client: Optional[OpenAI] = None
         self._client_initialisation_error: Optional[Exception] = None
@@ -66,19 +81,39 @@ class TopicBandit:
             features = dict(features)
             features.setdefault("context_text", context)
 
-        best_score = float('-inf')
         best_idx = 0
+        best_score = float('-inf')
+        scores: List[Tuple[str, float]] = []
 
         for idx in range(self.n_topics):
             x = self._get_feature_vector(idx, features)
             A_inv = self.A_inv_matrices[idx]
             theta = A_inv @ self.b_vectors[idx]
             exploration_bonus = self.exploration_param * np.sqrt(np.dot(x, A_inv @ x))
-            score = float(np.dot(theta, x) + exploration_bonus)
+            base_score = float(np.dot(theta, x) + exploration_bonus)
+            penalty = self._calculate_topic_penalty(idx)
+            score = base_score - penalty
+            scores.append((self.topics[idx], score))
 
             if score > best_score:
                 best_score = score
                 best_idx = idx
+
+        if self.total_selections > 0 and np.random.rand() < self.min_exploration_probability:
+            unexplored = [i for i in range(self.n_topics) if self.topic_frequency[i] == 0]
+            candidate_indices = unexplored or list(range(self.n_topics))
+            best_idx = np.random.choice(candidate_indices)
+            best_score = dict(scores).get(self.topics[best_idx], best_score)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            top_candidates = sorted(scores, key=lambda item: item[1], reverse=True)[:3]
+            logger.debug(
+                "Bandit topic scores: %s (selected=%s score=%.3f penalty=%.3f)",
+                ", ".join(f"{name}:{score:.3f}" for name, score in top_candidates),
+                self.topics[best_idx],
+                best_score,
+                self._calculate_topic_penalty(best_idx),
+            )
 
         self._last_contexts[best_idx] = context
         self._last_features[best_idx] = features
@@ -86,6 +121,7 @@ class TopicBandit:
         self.last_selected_times[best_idx] = current_time
         self.total_selections += 1
         self.topic_frequency[best_idx] += 1
+        self._record_recent_topic(best_idx)
         return best_idx, self.topics[best_idx]
     
     def _explore_with_llm(self, context: str) -> Tuple[int, str]:
@@ -133,8 +169,14 @@ class TopicBandit:
 
         context_text = str(feature_payload.get('context_text', '') or '')
         context_lower = context_text.lower()
+        user_text = str(feature_payload.get('user_input', '') or '').lower()
         topic_keyword = self.topics[topic_idx].lower()
-        vector[idx] = 1.0 if topic_keyword in context_lower else 0.0
+        if topic_keyword and topic_keyword in user_text:
+            vector[idx] = 1.0
+        elif topic_keyword and topic_keyword in context_lower:
+            vector[idx] = 0.5
+        else:
+            vector[idx] = 0.0
         idx += 1
 
         total = max(float(self.total_selections), 1.0)
@@ -182,6 +224,32 @@ class TopicBandit:
         idx += 1
 
         return vector
+
+    def _record_recent_topic(self, topic_idx: int) -> None:
+        self.recent_topic_buffer.append(topic_idx)
+        if len(self.recent_topic_buffer) > self.recent_buffer_size:
+            self.recent_topic_buffer.pop(0)
+
+    def _calculate_topic_penalty(self, topic_idx: int) -> float:
+        penalty = 0.0
+
+        last_time = self.last_selected_times[topic_idx]
+        if last_time > 0:
+            delta = max(time.time() - last_time, 0.0)
+            if delta < self.recency_window:
+                penalty += self.recency_penalty * (1.0 - (delta / self.recency_window))
+
+        if self.total_selections > 0:
+            frequency_ratio = float(self.topic_frequency[topic_idx]) / float(self.total_selections)
+            penalty += self.frequency_penalty * frequency_ratio
+
+        if self.recent_topic_buffer.count(topic_idx) > 1:
+            repeat_ratio = float(self.recent_topic_buffer.count(topic_idx)) / max(
+                len(self.recent_topic_buffer), 1
+            )
+            penalty += self.recency_penalty * repeat_ratio * 0.5
+
+        return penalty
     
     def evaluate_response(self, response: str, user_input: str) -> float:
         """LLMを使用して応答の質を評価"""
