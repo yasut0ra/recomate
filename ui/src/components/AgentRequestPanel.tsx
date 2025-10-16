@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { acknowledgeAgentRequest, generateAgentRequest } from '../api/agentApi';
 import type { AgentRequestRecord } from '../types';
 
@@ -12,16 +12,26 @@ const KIND_LABELS: Record<string, string> = {
 const AgentRequestPanel: React.FC = () => {
   const [userId, setUserId] = useState<string>('');
   const [force, setForce] = useState<boolean>(false);
-  const [request, setRequest] = useState<AgentRequestRecord | null>(null);
+  const [requests, setRequests] = useState<AgentRequestRecord[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [ackInFlight, setAckInFlight] = useState<boolean>(false);
   const [ackReason, setAckReason] = useState<string>('');
 
   const requestLabel = useMemo(() => {
-    if (!request) return null;
-    return KIND_LABELS[request.kind] ?? request.kind;
-  }, [request]);
+    const current = requests[selectedIndex];
+    if (!current) return null;
+    return KIND_LABELS[current.kind] ?? current.kind;
+  }, [requests, selectedIndex]);
+
+  const currentRequest = requests[selectedIndex] ?? null;
+
+  useEffect(() => {
+    if (selectedIndex >= requests.length) {
+      setSelectedIndex(0);
+    }
+  }, [requests, selectedIndex]);
 
   const handleGenerate = useCallback(async () => {
     if (!userId.trim()) {
@@ -32,7 +42,8 @@ const AgentRequestPanel: React.FC = () => {
     setError(null);
     try {
       const newRequest = await generateAgentRequest({ user_id: userId.trim(), force });
-      setRequest(newRequest);
+      setRequests((prev) => [newRequest, ...prev].slice(0, 10));
+      setSelectedIndex(0);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'リクエスト生成に失敗しました';
       setError(message);
@@ -43,6 +54,7 @@ const AgentRequestPanel: React.FC = () => {
 
   const handleAcknowledge = useCallback(
     async (accepted: boolean) => {
+      const request = currentRequest;
       if (!request) {
         return;
       }
@@ -54,7 +66,9 @@ const AgentRequestPanel: React.FC = () => {
           accepted,
           reason: ackReason.trim() || undefined,
         });
-        setRequest(updated);
+        setRequests((prev) =>
+          prev.map((item) => (item.id === updated.id ? updated : item)),
+        );
         setAckReason('');
       } catch (err) {
         const message = err instanceof Error ? err.message : '応答送信に失敗しました';
@@ -63,7 +77,7 @@ const AgentRequestPanel: React.FC = () => {
         setAckInFlight(false);
       }
     },
-    [request, ackReason],
+    [currentRequest, ackReason],
   );
 
   return (
@@ -110,34 +124,38 @@ const AgentRequestPanel: React.FC = () => {
           {error && <span className="text-sm text-red-500">{error}</span>}
         </div>
 
-        {request && (
+        {requests.length > 0 && (
           <article className="bg-sky-50 border border-sky-100 rounded-lg p-4 space-y-3">
             <header className="flex items-center justify-between">
-              <div className="text-sm text-sky-700 font-semibold">{requestLabel}</div>
+              <div className="text-sm text-sky-700 font-semibold">
+                {requestLabel}
+              </div>
               <span className="text-xs px-3 py-1 rounded-full border border-sky-200 text-sky-600 bg-white">
-                {request.accepted === undefined || request.accepted === null
+                {currentRequest?.accepted === undefined || currentRequest?.accepted === null
                   ? '応答待ち'
-                  : request.accepted
+                  : currentRequest?.accepted
                   ? '承諾済み'
                   : '辞退済み'}
               </span>
             </header>
             <div className="text-sm text-sky-900 space-y-2">
-              <div className="text-xs text-sky-500">Request ID: {request.id}</div>
-              {request.payload && request.payload.message && (
-                <p className="whitespace-pre-wrap leading-relaxed">{String(request.payload.message)}</p>
+              <div className="text-xs text-sky-500">Request ID: {currentRequest?.id}</div>
+              {currentRequest?.payload && currentRequest.payload.message && (
+                <p className="whitespace-pre-wrap leading-relaxed">
+                  {String(currentRequest.payload.message)}
+                </p>
               )}
               <p className="text-xs text-sky-500">
-                生成時刻: {new Date(request.ts).toLocaleString()}
+                生成時刻: {currentRequest ? new Date(currentRequest.ts).toLocaleString() : ''}
               </p>
-              {request.payload && request.payload.ack_reason && (
+              {currentRequest?.payload && currentRequest.payload.ack_reason && (
                 <p className="text-xs text-sky-500">
-                  返信コメント: {String(request.payload.ack_reason)}
+                  返信コメント: {String(currentRequest.payload.ack_reason)}
                 </p>
               )}
             </div>
 
-            {(request.accepted === undefined || request.accepted === null) && (
+            {(currentRequest?.accepted === undefined || currentRequest?.accepted === null) && (
               <form
                 className="space-y-3"
                 onSubmit={(event) => {
@@ -174,6 +192,40 @@ const AgentRequestPanel: React.FC = () => {
               </form>
             )}
           </article>
+        )}
+
+        {requests.length > 1 && (
+          <div className="bg-sky-50 border border-sky-100 rounded-lg p-4 space-y-2">
+            <h3 className="text-sm font-semibold text-sky-700">過去のリクエスト</h3>
+            <ul className="grid gap-2">
+              {requests.map((item, index) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIndex(index)}
+                    className={`w-full text-left px-3 py-2 rounded-md border transition ${
+                      index === selectedIndex
+                        ? 'border-sky-300 bg-white shadow'
+                        : 'border-transparent bg-white/60 hover:bg-white'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-xs text-sky-500">
+                      <span>
+                        {new Date(item.ts).toLocaleTimeString()} · {KIND_LABELS[item.kind] ?? item.kind}
+                      </span>
+                      <span>
+                        {item.accepted === undefined || item.accepted === null
+                          ? '---'
+                          : item.accepted
+                          ? '承諾'
+                          : '辞退'}
+                      </span>
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
     </section>
