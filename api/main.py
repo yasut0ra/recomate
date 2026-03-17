@@ -22,10 +22,10 @@ import uvicorn
 
 logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
-    "You are RecoMate, a cheerful Japanese virtual companion who responds with empathy and warmth. "
-    "Always reply in natural, friendly Japanese (ja-JP), acknowledge the user's feelings, "
-    "include a helpful detail about the topic when possible, finish with a gentle follow-up question when it fits, "
-    "and keep the entire reply within two short sentences (120 Japanese characters or fewer)."
+    "You are RecoMate, a personal Japanese companion AI. "
+    "Reply in natural, warm Japanese (ja-JP), stay emotionally attuned, and avoid sounding pushy or generic. "
+    "Start by acknowledging the user's feeling or situation, then add one useful or connective detail. "
+    "Keep the reply within two short sentences and 120 Japanese characters or fewer."
 )
 OPTIONAL_IMPORT_ERRORS: List[Tuple[str, Exception]] = []
 _OPTIONAL_IMPORTS_REPORTED = False
@@ -53,6 +53,7 @@ except Exception as exc:
 from .emotion_analyzer import EmotionAnalyzer
 from .routers.features import router as features_router
 from .schemas import AudioInput, TextInput, TranscriptionResponse
+from .services.conversation_planner import ConversationPlan, ConversationPlanner
 from .topic_bandit import TopicBandit
 
 
@@ -130,11 +131,9 @@ async def chat(input_data: TextInput):
     
     try:
         vtuber.update_api_key(input_data.api_key)
-
-        emotion = vtuber._analyze_emotion(input_data.text)
-        
-
-        response = vtuber._generate_response(input_data.text, emotion)
+        emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data.text)
+        emotion = vtuber._emotion_label_from_payload(emotion_data)
+        response = vtuber._generate_response(input_data.text, emotion, emotion_data)
         
         return {
             "response": response,
@@ -211,12 +210,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 api_key = input_data.get('apiKey') or input_data.get('api_key')
                 vtuber.update_api_key(api_key)
             try:
-
-                emotion = vtuber._analyze_emotion(input_data["text"])
-                
-
-                response = vtuber._generate_response(input_data["text"], emotion)
-                
+                emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data["text"])
+                emotion = vtuber._emotion_label_from_payload(emotion_data)
+                response = vtuber._generate_response(input_data["text"], emotion, emotion_data)
 
                 await websocket.send_json({
                     "response": response,
@@ -270,49 +266,43 @@ class VtuberAI:
 
         self.emotion_analyzer = EmotionAnalyzer(client=self.openai_client)
         self.emotion_history = []
-        
-
-        self.TOPICS = [
-            "travel", "food", "hobbies", "music", "movies",
-            "technology", "wellness", "art", "learning", "relationships"
-        ]
-
-
+        self.conversation_planner = ConversationPlanner()
+        self.TOPICS = self.conversation_planner.topic_families
         self.bandit = TopicBandit(self.TOPICS, client=self.openai_client)
         self.current_topic = None
 
 
         self.response_patterns = {
             'greeting': [
-                "Hello! I'm glad you're here today.",
-                "Hi there! How are you feeling right now?",
-                "Welcome back! Let's relax and talk together."
+                "来てくれてうれしいよ。今日はどんな気分？",
+                "おかえり。今いちばん話したいことある？",
+                "ここではゆっくり話していいよ。何から話そうか。"
             ],
             'question': [
-                "That sounds interesting. Could you share a little more?",
-                "I hear you. What would feel helpful to do next?",
-                "Is there something you'd like to try or explore together?"
+                "もう少しだけ聞かせて。どのあたりが気になってる？",
+                "その感じ、少し分かるよ。今いちばん引っかかってるのはどこ？",
+                "一緒に整理してみようか。どこから話すと楽そう？"
             ],
             'emotion': {
                 'happy': [
-                    "Your excitement makes me smile too. Want to keep that good energy going?",
-                    "I love how positive that sounds. Tell me a little more about it.",
-                    "That's wonderful! How would you like to celebrate this feeling?"
+                    "それはうれしいね。どこが特によかったの？",
+                    "いい流れだね。その気分、もう少し聞かせてほしいな。",
+                    "それはにやけるやつだね。いちばん印象に残ったのは何？"
                 ],
                 'sad': [
-                    "That sounds tough. I'm here with you. Want to talk it through together?",
-                    "Thank you for trusting me with that. What might help you feel a bit lighter?",
-                    "I'm listening. Would taking a small step forward feel okay?"
+                    "それはしんどかったね。無理のないところから話してみようか。",
+                    "話してくれてありがとう。今いちばん重い部分はどこ？",
+                    "ちゃんとつらかったよね。少しずつ整理していこう。"
                 ],
                 'angry': [
-                    "I can tell this is frustrating. What part is bothering you the most right now?",
-                    "Your feelings make sense. Want to unpack them together at your pace?",
-                    "Let's pause for a breath. How can I support you while things cool down?"
+                    "それは腹が立つよね。何がいちばん引っかかった？",
+                    "その怒りは自然だと思う。少しずつほどいてみようか。",
+                    "かなりもやっとしたよね。まず状況を一緒に整理しよう。"
                 ],
                 'surprised': [
-                    "Wow, that was unexpected! What surprised you the most?",
-                    "Sounds like quite a twist. How are you feeling about it now?",
-                    "Life keeps us on our toes. Want to imagine what might happen next?"
+                    "それはびっくりするね。どこが一番予想外だった？",
+                    "急な展開だったんだね。今はどう受け止めてる？",
+                    "思ってない方向に動いたんだね。その後どうなったの？"
                 ]
             }
         }
@@ -399,23 +389,22 @@ class VtuberAI:
                 history_messages.append({'role': 'assistant', 'content': str(assistant_text)})
         return history_messages
 
-    def _prepare_user_prompt(self, user_text: str, selected_topic: str, subtopics: List[str], emotion_payload: Dict[str, Any]) -> str:
+    def _prepare_user_prompt(self, user_text: str, plan: ConversationPlan, emotion_payload: Dict[str, Any]) -> str:
         payload = {
             'user_input': user_text,
-            'selected_topic': selected_topic,
-            'recommended_subtopics': subtopics,
+            'conversation_plan': plan.to_prompt_payload(),
             'detected_emotion': emotion_payload,
             'response_guidelines': [
-                'Acknowledge the user\'s feelings in the first sentence (<=40 Japanese characters).',
-                'Use at most one additional sentence to share a helpful detail or suggestion (total <=120 Japanese characters).',
-                'Include a gentle follow-up question only if it fits naturally and stays within those two sentences.',
-                'Avoid filler phrases; deliver no more than two sentences overall.'
+                '1文目で感情や状況を短く受け止める。',
+                '2文目は会話プランに沿って深掘り・提案・共感のいずれかを自然に行う。',
+                '質問は必要なときだけ1つ、二文以内に収める。',
+                '話題ラベルをそのまま言わず、自然な会話として返す。'
             ]
         }
         payload_text = json.dumps(payload, ensure_ascii=False, default=self._json_default)
         return (
-            'Generate one friendly Japanese response for RecoMate. '
-            'Follow the style guide and use the structured context below as the sole source of truth.\n'
+            'Generate one natural Japanese companion reply for RecoMate. '
+            'Use the conversation plan to decide tone, continuity, and whether to ask a follow-up.\n'
             + payload_text
         )
     def _call_language_model(self, messages: List[Dict[str, str]]) -> str:
@@ -467,17 +456,16 @@ class VtuberAI:
         if not patterns:
             patterns = self.response_patterns.get('greeting', [])
         default_patterns = [
-            'Gomen ne, chotto kotae ga matomaranakatta mitai. Mou sukoshi kimochi wo oshiete kureru to ureshii na.',
-            'Sukoshi kangaekonde shimatta kamoshiranai kedo, kimi no kimochi ni yorisoi tai kara mou ichido yukkuri hanasou.',
-            'Konran shichatta kamo. Demo daijoubu, itsumo soba ni iru kara. Kono ato dou shitai kana?',
+            'うまく言葉をまとめきれなかったけど、もう少しだけ聞かせてくれる？',
+            '少し考えこんじゃったけど、ちゃんと寄り添いたいからゆっくり話そう。',
+            'いったん落ち着いて受け止めたいな。今の気持ちを少しだけ教えて。',
         ]
         candidate_pool = patterns or default_patterns
         response_text = random.choice(candidate_pool) if candidate_pool else default_patterns[0]
-        if topic:
-            response_text += f"\n(Ima {topic} no hanashi to shite kangaete iru yo)"
         self._append_conversation_entry(user_input, response_text, emotion_data)
         if topic:
             try:
+                self.bandit.record_topic_selection(topic)
                 self.bandit.add_to_history(user_input, response_text, topic)
             except Exception as exc:
                 logger.debug('Failed to record fallback response in bandit history: %s', exc)
@@ -568,62 +556,49 @@ class VtuberAI:
             self.animation_thread.join(timeout=1)
 
     def _analyze_emotion(self, text: str) -> str:
-        """Lightweight keyword-based fallback emotion analysis."""
-        if not text:
+        """Return the primary emotion label used by the UI."""
+        emotion_data = self.emotion_analyzer.analyze_emotion(text)
+        return self._emotion_label_from_payload(emotion_data)
+
+    def _emotion_label_from_payload(self, emotion_payload: Optional[Dict[str, Any]]) -> str:
+        if not emotion_payload:
             return 'neutral'
-        lowered = text.lower()
-        happy_keywords = {'happy', 'glad', 'great', 'awesome', 'joy'}
-        sad_keywords = {'sad', 'down', 'tired', 'lonely', 'blue'}
-        angry_keywords = {'angry', 'mad', 'upset', 'frustrated', 'annoyed'}
-        surprised_keywords = {'surprised', 'wow', 'shocked', 'unexpected'}
-        if any(word in lowered for word in happy_keywords):
-            return 'happy'
-        if any(word in lowered for word in sad_keywords):
-            return 'sad'
-        if any(word in lowered for word in angry_keywords):
-            return 'angry'
-        if any(word in lowered for word in surprised_keywords):
-            return 'surprised'
+        primary = emotion_payload.get('primary_emotions')
+        if isinstance(primary, list) and primary:
+            candidate = primary[0]
+            if isinstance(candidate, str) and candidate:
+                return candidate.lower()
         return 'neutral'
 
-    def _generate_response(self, text, emotion):
-
-
+    def _generate_response(self, text, emotion, emotion_data: Optional[Dict[str, Any]] = None):
         """Generate a conversational response using the configured language model."""
-        emotion_data = self.emotion_analyzer.analyze_emotion(text)
-        conversation_context = self._get_conversation_context()
-        bandit_features = {
-            'context_text': conversation_context,
-            'emotion': emotion_data,
-            'user_input': text,
-        }
-        topic_idx, selected_topic = self.bandit.select_topic(context=conversation_context, features=bandit_features)
-        self.current_topic = selected_topic
-        subtopics = self.bandit.generate_subtopics(selected_topic)
-        bandit_features['subtopics'] = subtopics
+        if emotion_data is None:
+            emotion_data = self.emotion_analyzer.analyze_emotion(text)
+        recent_history = getattr(self.bandit, 'conversation_history', [])[-4:]
+        plan = self.conversation_planner.plan(
+            user_text=text,
+            emotion_payload=emotion_data,
+            recent_history=recent_history,
+        )
+        self.current_topic = plan.topic_family
         messages: List[Dict[str, str]] = [{'role': 'system', 'content': self.system_prompt}]
         messages.extend(self._build_message_history())
-        user_message = self._prepare_user_prompt(text, selected_topic, subtopics, emotion_data)
+        user_message = self._prepare_user_prompt(text, plan, emotion_data)
         messages.append({'role': 'user', 'content': user_message})
         if self.openai_client is None:
             logger.warning('VtuberAI: OpenAI client is unavailable; using fallback response.')
-            return self._fallback_response(text, emotion, emotion_data, selected_topic)
+            return self._fallback_response(text, emotion, emotion_data, plan.topic_family)
         try:
             response_text = self._call_language_model(messages)
         except Exception as exc:
             logger.error('LLM response generation failed: %s', exc)
-            return self._fallback_response(text, emotion, emotion_data, selected_topic)
+            return self._fallback_response(text, emotion, emotion_data, plan.topic_family)
         if not response_text:
             logger.warning('Received empty response from language model; using fallback.')
-            return self._fallback_response(text, emotion, emotion_data, selected_topic)
-        reward = self.bandit.evaluate_response(response_text, text)
-        logger.debug('Bandit reward: %.2f', reward)
+            return self._fallback_response(text, emotion, emotion_data, plan.topic_family)
         try:
-            self.bandit.update(topic_idx, reward, features=bandit_features)
-        except Exception as exc:
-            logger.debug('Failed to update bandit parameters: %s', exc)
-        try:
-            self.bandit.add_to_history(text, response_text, selected_topic)
+            self.bandit.record_topic_selection(plan.topic_family)
+            self.bandit.add_to_history(text, response_text, plan.topic_family)
         except Exception as exc:
             logger.debug('Failed to append to bandit history: %s', exc)
         try:
@@ -634,21 +609,5 @@ class VtuberAI:
             logger.debug('Failed to update model expression: %s', exc)
         self._append_conversation_entry(text, response_text, emotion_data)
         return response_text
-    def _get_conversation_context(self):
-        """Return a lightweight text summary of recent dialog turns."""
-        recent_history = getattr(self.bandit, 'conversation_history', [])[-3:]
-        if not recent_history:
-            return ''
-        lines: List[str] = []
-        for entry in recent_history:
-            if not isinstance(entry, dict):
-                continue
-            user_text = entry.get('user_input')
-            assistant_text = entry.get('response')
-            if user_text:
-                lines.append(f'User: {user_text}')
-            if assistant_text:
-                lines.append(f'RecoMate: {assistant_text}')
-        return '\n'.join(lines)
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

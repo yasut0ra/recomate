@@ -407,6 +407,20 @@ class TopicBandit:
             'topic': topic,
             'timestamp': time.time()
         })
+
+    def record_topic_selection(self, topic: str) -> Optional[int]:
+        """Record a topic choice when selection is handled outside LinUCB."""
+        if topic not in self.topics:
+            logger.debug("TopicBandit.record_topic_selection: unknown topic %s", topic)
+            return None
+
+        topic_idx = self.topics.index(topic)
+        self.last_selected_times[topic_idx] = time.time()
+        self.total_selections += 1
+        self.topic_frequency[topic_idx] += 1
+        self.counts[topic_idx] += 1
+        self._record_recent_topic(topic_idx)
+        return topic_idx
     
     def get_stats(self) -> Dict:
         """トピックの統計情報を取得"""
