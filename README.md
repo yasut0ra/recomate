@@ -79,7 +79,7 @@ npm run lint
 ```
 
 > 旧来の Node/Express サーバーは廃止しました。バックエンドは Python/FastAPI に統一されています。
-> ただし `src/` や `electron/main.js` には旧構成のコードが一部残っているため、現状整理は `docs/codebase_overview.md` を参照してください。
+> 旧構成は `legacy/` 配下へ退避しています。通常の開発では触らず、現状整理は `docs/codebase_overview.md` を参照してください。
 
 ## データベース / マイグレーション
 

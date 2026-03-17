@@ -7,7 +7,7 @@
 - 実運用に近い本体は `api/` と `ui/` です。
 - `api/` は FastAPI ベースのバックエンドで、会話・音声・ムード・メモリ・儀式・Agent リクエストを持ちます。
 - `ui/` は React + TypeScript + Vite のフロントエンドで、Electron からも起動できます。
-- `src/` と `electron/` には旧 Node/Express 系のコードが残っていますが、現行 README の主系統ではありません。
+- `legacy/` には旧 Node/Express / Electron 系のコードを退避しています。現行 README の主系統ではありません。
 
 ## ディレクトリ別の役割
 
@@ -35,15 +35,15 @@
 - `ui/electron-main.js`
   - Vite 開発サーバーを表示するシンプルな Electron エントリ。
 
-### `src/`
+### `legacy/node-express/`
 
 - 旧 Node/Express 系の残置コードです。
-- `src/server.ts` と `src/routes/topics.ts` はダミー API に近く、現行 README の起動手順では使いません。
+- `legacy/node-express/src/server.ts` と `legacy/node-express/src/routes/topics.ts` はダミー API に近く、現行 README の起動手順では使いません。
 
-### `electron/`
+### `legacy/electron/`
 
 - 旧 Electron 起動コードです。
-- `electron/main.js` は Python プロセスを直接起動する実装ですが、現行 `ui/electron-main.js` と役割が重複しています。
+- `legacy/electron/main.js` は Python プロセスを直接起動する実装ですが、現行 `ui/electron-main.js` と役割が重複しています。
 
 ## 実装済みの主な機能
 
@@ -79,7 +79,7 @@
 ### 2. 現役コードと旧コードが同居している
 
 - 現役: `api/`, `ui/`
-- 旧構成の残置候補: `src/`, `electron/main.js`
+- 旧構成の退避先: `legacy/node-express/`, `legacy/electron/`
 
 いまの混在状態だと、新しく入る人が「どれが本番系なのか」を見誤りやすいです。
 
@@ -107,7 +107,7 @@
 ## 次にやると効果が大きい整理
 
 1. `api/main.py` を router ごとに分割する
-2. `src/` と `electron/main.js` を `legacy/` へ移すか削除方針を決める
+2. `legacy/` 配下の旧構成を削除するか、資料として残すか方針を決める
 3. UI の API デモパネルを `features/devtools` 的にまとめる
 4. pytest と最小限のフロントテストを追加する
 5. `TopicBandit` と `EmotionAnalyzer` の OpenAI 呼び出しをサービス境界の内側に寄せる

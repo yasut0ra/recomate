@@ -1,7 +1,7 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
-const { APP_ROOT, buildUvicornArgs, resolvePythonCommand } = require('../scripts/python-runtime.cjs');
+const { APP_ROOT, buildUvicornArgs, resolvePythonCommand } = require('../../scripts/python-runtime.cjs');
 
 let mainWindow;
 let pythonProcess;

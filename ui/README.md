@@ -42,4 +42,4 @@ npm run build
 ## 備考
 
 - `ui/electron-main.js` は現行の簡易 Electron エントリです。
-- ルートの `electron/main.js` は旧構成の残置コードです。
+- 旧 Electron エントリは `legacy/electron/main.js` に退避しています。
