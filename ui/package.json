@@ -5,7 +5,9 @@
   "main": "electron-main.js",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "npm run dev:desktop",
+    "dev:desktop": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev:web": "vite",
     "electron": "electron .",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

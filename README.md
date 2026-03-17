@@ -17,6 +17,30 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 
 ## 開発環境の起動方法
 
+### 推奨: ルートからまとめて起動
+
+1. Python の仮想環境を作成し、依存関係をインストールします。
+
+   ```bash
+   python -m venv venv
+   source venv/bin/activate        # Windows の場合は venv\Scripts\activate
+   pip install -r api/requirements.txt
+   npm install
+   npm --prefix ui install
+   ```
+
+2. ルートディレクトリで起動します。
+
+   ```bash
+   npm run dev
+   ```
+
+   - `npm run dev`: FastAPI + Vite + Electron
+   - `npm run dev:web`: FastAPI + Vite
+   - `venv/` または `.venv/` があれば自動検出して API 起動に使います
+
+### 手動で分けて起動する場合
+
 1. Python の仮想環境を作成し、依存関係をインストールします。
 
    ```bash
@@ -43,6 +67,16 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
    ```
 
 4. Electron で実行する場合は、FastAPI が `http://127.0.0.1:8000` で稼働していることを確認してください。
+
+## よく使うコマンド
+
+```bash
+npm run dev
+npm run dev:web
+npm run dev:api
+npm run build
+npm run lint
+```
 
 > 旧来の Node/Express サーバーは廃止しました。バックエンドは Python/FastAPI に統一されています。
 > ただし `src/` や `electron/main.js` には旧構成のコードが一部残っているため、現状整理は `docs/codebase_overview.md` を参照してください。

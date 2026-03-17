@@ -7,13 +7,17 @@
 ```bash
 npm install
 npm run dev
+npm run dev:web
 npm run lint
 npm run build
 ```
 
 - `npm run dev`
+  - `npm run dev:desktop` のエイリアスです。
   - Vite と Electron を同時起動します。
   - FastAPI は別途 `http://127.0.0.1:8000` で起動しておく前提です。
+- `npm run dev:web`
+  - Vite のみ起動します。
 - `npm run build`
   - TypeScript ビルドと Vite の本番ビルドを実行します。
 
