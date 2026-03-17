@@ -1,11 +1,15 @@
 import os
 import json
 import requests
-import pygame
 import hashlib
 import tempfile
 from pathlib import Path
 import time
+
+try:
+    import pygame
+except Exception:  # noqa: BLE001
+    pygame = None  # type: ignore[assignment]
 
 class TextToSpeech:
     def __init__(self, voice_id=1, cache_dir="voice_cache"):
@@ -13,10 +17,7 @@ class TextToSpeech:
         self.base_url = "http://localhost:50021"
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
-        
-        # pygameの初期化
-        pygame.mixer.init()
-        
+
         # 音声の品質設定
         self.speed_scale = 1.0
         self.volume_scale = 1.0
@@ -29,6 +30,16 @@ class TextToSpeech:
     def _request(self, method, path, **kwargs):
         timeout = kwargs.pop('timeout', 10)
         return requests.request(method, f"{self.base_url}{path}", timeout=timeout, **kwargs)
+
+    def _ensure_playback_backend(self):
+        """Initialise pygame mixer only when local playback is requested."""
+        if pygame is None:
+            raise RuntimeError("pygame is not installed; local audio playback is unavailable")
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"pygame mixer is unavailable: {exc}") from exc
 
     def _check_voicevox_status(self):
         """VOICEVOXの状態を確認"""
@@ -97,6 +108,7 @@ class TextToSpeech:
     def speak(self, text):
         """テキストを音声に変換して再生"""
         try:
+            self._ensure_playback_backend()
             audio_data = self.synthesise(text)
 
             # 一時ファイルを作成

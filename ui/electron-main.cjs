@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+const { app, BrowserWindow } = require('electron');
 
 const DEV_SERVER_URL = process.env.RECOMATE_UI_URL || 'http://localhost:5173';
 

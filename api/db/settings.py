@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 from typing import Final
 
+from dotenv import load_dotenv
+
 _DEFAULT_DB_URL: Final[str] = "postgresql+psycopg://postgres:postgres@localhost:5432/recomate"
+
+load_dotenv()
 
 
 def get_database_url() -> str:
@@ -14,4 +18,3 @@ def get_database_url() -> str:
     if from_env:
         return from_env
     return _DEFAULT_DB_URL
-

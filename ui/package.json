@@ -2,13 +2,13 @@
   "name": "ui",
   "private": true,
   "version": "0.0.0",
-  "main": "electron-main.js",
+  "main": "electron-main.cjs",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:desktop",
-    "dev:desktop": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev:desktop": "concurrently \"vite\" \"wait-on http://localhost:5173 && node scripts/run-electron.cjs\"",
     "dev:web": "vite",
-    "electron": "electron .",
+    "electron": "node scripts/run-electron.cjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
