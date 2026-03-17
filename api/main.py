@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import io
 import json
 import logging
@@ -9,8 +10,10 @@ import tempfile
 import threading
 import time
 import wave
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import UUID
 
 import numpy as np
 from dotenv import load_dotenv
@@ -50,10 +53,14 @@ try:
 except Exception as exc:
     VtuberModel = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("vtuber_model", exc))
+from .db.session import get_session
 from .emotion_analyzer import EmotionAnalyzer
 from .routers.features import router as features_router
 from .schemas import AudioInput, TextInput, TranscriptionResponse
+from .services.consent import get_consent_setting
 from .services.conversation_planner import ConversationPlan, ConversationPlanner
+from .services.mood import get_recent_moods
+from .services.users import resolve_local_user
 from .topic_bandit import TopicBandit
 
 
@@ -133,7 +140,8 @@ async def chat(input_data: TextInput):
         vtuber.update_api_key(input_data.api_key)
         emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data.text)
         emotion = vtuber._emotion_label_from_payload(emotion_data)
-        response = vtuber._generate_response(input_data.text, emotion, emotion_data)
+        runtime_context = vtuber._build_runtime_context(input_data.user_id)
+        response = vtuber._generate_response(input_data.text, emotion, emotion_data, runtime_context)
         
         return {
             "response": response,
@@ -212,7 +220,15 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data["text"])
                 emotion = vtuber._emotion_label_from_payload(emotion_data)
-                response = vtuber._generate_response(input_data["text"], emotion, emotion_data)
+                raw_user_id = input_data.get("userId") or input_data.get("user_id")
+                parsed_user_id = None
+                if isinstance(raw_user_id, str) and raw_user_id.strip():
+                    try:
+                        parsed_user_id = UUID(raw_user_id)
+                    except ValueError:
+                        parsed_user_id = None
+                runtime_context = vtuber._build_runtime_context(parsed_user_id)
+                response = vtuber._generate_response(input_data["text"], emotion, emotion_data, runtime_context)
 
                 await websocket.send_json({
                     "response": response,
@@ -389,11 +405,23 @@ class VtuberAI:
                 history_messages.append({'role': 'assistant', 'content': str(assistant_text)})
         return history_messages
 
-    def _prepare_user_prompt(self, user_text: str, plan: ConversationPlan, emotion_payload: Dict[str, Any]) -> str:
+    def _prepare_user_prompt(
+        self,
+        user_text: str,
+        plan: ConversationPlan,
+        emotion_payload: Dict[str, Any],
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
         payload = {
             'user_input': user_text,
             'conversation_plan': plan.to_prompt_payload(),
             'detected_emotion': emotion_payload,
+            'runtime_context': {
+                'display_name': (runtime_context or {}).get('display_name'),
+                'mood_state': (runtime_context or {}).get('mood_state'),
+                'timezone': (runtime_context or {}).get('timezone'),
+                'local_hour': (runtime_context or {}).get('local_hour'),
+            },
             'response_guidelines': [
                 '1文目で感情や状況を短く受け止める。',
                 '2文目は会話プランに沿って深掘り・提案・共感のいずれかを自然に行う。',
@@ -570,20 +598,80 @@ class VtuberAI:
                 return candidate.lower()
         return 'neutral'
 
-    def _generate_response(self, text, emotion, emotion_data: Optional[Dict[str, Any]] = None):
+    def _resolve_local_hour(self, timezone_name: Optional[str]) -> int:
+        resolved_timezone = timezone_name or 'Asia/Tokyo'
+        try:
+            return datetime.now(ZoneInfo(resolved_timezone)).hour
+        except ZoneInfoNotFoundError:
+            logger.debug('Unknown timezone %s; falling back to Asia/Tokyo', resolved_timezone)
+        except Exception:
+            logger.debug('Failed to resolve local hour for timezone %s', resolved_timezone, exc_info=True)
+        return datetime.now(ZoneInfo('Asia/Tokyo')).hour
+
+    def _build_runtime_context(self, user_id: Optional[UUID]) -> Dict[str, Any]:
+        default_context = {
+            'user_id': str(user_id) if user_id else None,
+            'display_name': 'Local User',
+            'timezone': 'Asia/Tokyo',
+            'local_hour': self._resolve_local_hour('Asia/Tokyo'),
+            'mood_state': '穏やか',
+            'consent': {
+                'night_mode': True,
+                'push_intensity': 'medium',
+                'private_topics': ['個人特定情報'],
+                'learning_paused': False,
+            },
+        }
+        session = get_session()
+        try:
+            user = resolve_local_user(session, user_id)
+            mood_state, _ = get_recent_moods(session, user.id, limit=5)
+            consent = get_consent_setting(session, user.id)
+            timezone_name = getattr(user, 'timezone', None) or 'Asia/Tokyo'
+            return {
+                'user_id': str(user.id),
+                'display_name': user.display_name,
+                'timezone': timezone_name,
+                'local_hour': self._resolve_local_hour(timezone_name),
+                'mood_state': mood_state,
+                'consent': {
+                    'night_mode': bool(consent.night_mode),
+                    'push_intensity': consent.push_intensity,
+                    'private_topics': list(consent.private_topics or []),
+                    'learning_paused': bool(consent.learning_paused),
+                },
+            }
+        except Exception as exc:
+            logger.debug('Failed to build runtime context for chat; using defaults: %s', exc)
+            return default_context
+        finally:
+            session.close()
+
+    def _generate_response(
+        self,
+        text,
+        emotion,
+        emotion_data: Optional[Dict[str, Any]] = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ):
         """Generate a conversational response using the configured language model."""
         if emotion_data is None:
             emotion_data = self.emotion_analyzer.analyze_emotion(text)
+        if runtime_context is None:
+            runtime_context = self._build_runtime_context(None)
         recent_history = getattr(self.bandit, 'conversation_history', [])[-4:]
         plan = self.conversation_planner.plan(
             user_text=text,
             emotion_payload=emotion_data,
             recent_history=recent_history,
+            mood_state=runtime_context.get('mood_state'),
+            consent_profile=runtime_context.get('consent'),
+            local_hour=runtime_context.get('local_hour'),
         )
         self.current_topic = plan.topic_family
         messages: List[Dict[str, str]] = [{'role': 'system', 'content': self.system_prompt}]
         messages.extend(self._build_message_history())
-        user_message = self._prepare_user_prompt(text, plan, emotion_data)
+        user_message = self._prepare_user_prompt(text, plan, emotion_data, runtime_context)
         messages.append({'role': 'user', 'content': user_message})
         if self.openai_client is None:
             logger.warning('VtuberAI: OpenAI client is unavailable; using fallback response.')

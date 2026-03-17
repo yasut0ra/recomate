@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class TextInput(BaseModel):
     text: str
     api_key: Optional[str] = None
+    user_id: Optional[UUID] = None
 
 
 class AudioInput(BaseModel):

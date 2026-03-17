@@ -193,6 +193,7 @@ ADVICE_MARKERS = (
 )
 
 QUESTION_MARKERS = ("？", "?", "どう", "なんで", "なぜ", "どっち", "教えて")
+SENSITIVE_MARKERS = ("住所", "本名", "電話番号", "連絡先", "学校名", "会社名", "口座", "クレカ")
 
 NEGATIVE_EMOTIONS = {"sad", "angry", "fear", "disgust"}
 POSITIVE_EMOTIONS = {"happy", "joy", "trust", "anticipation"}
@@ -212,6 +213,9 @@ class ConversationPlan:
     matched_keywords: List[str]
     recent_topics: List[str]
     avoid_patterns: List[str]
+    boundary_mode: str
+    push_intensity: str
+    quiet_hours: bool
 
     def to_prompt_payload(self) -> Dict[str, Any]:
         return {
@@ -224,6 +228,9 @@ class ConversationPlan:
             "matched_keywords": self.matched_keywords,
             "recent_topics": self.recent_topics,
             "avoid_patterns": self.avoid_patterns,
+            "boundary_mode": self.boundary_mode,
+            "push_intensity": self.push_intensity,
+            "quiet_hours": self.quiet_hours,
         }
 
 
@@ -239,6 +246,9 @@ class ConversationPlanner:
         user_text: str,
         emotion_payload: Dict[str, Any] | None = None,
         recent_history: Sequence[Dict[str, Any]] | None = None,
+        mood_state: str | None = None,
+        consent_profile: Dict[str, Any] | None = None,
+        local_hour: int | None = None,
     ) -> ConversationPlan:
         text = _normalise_text(user_text)
         recent_topics = self._extract_recent_topics(recent_history)
@@ -246,6 +256,11 @@ class ConversationPlanner:
         continuity_marker = any(marker in text for marker in CONTINUITY_MARKERS)
         emotion_label = self._extract_primary_emotion(emotion_payload)
         intensity = self._extract_intensity(emotion_payload)
+        push_intensity = self._extract_push_intensity(consent_profile)
+        quiet_hours = bool(consent_profile and consent_profile.get("night_mode")) and local_hour is not None and (
+            local_hour >= 22 or local_hour < 7
+        )
+        sensitive_mode = self._detect_sensitive_mode(text, consent_profile)
 
         scores: Dict[str, float] = {}
         matches_by_topic: Dict[str, List[str]] = {}
@@ -272,14 +287,23 @@ class ConversationPlanner:
             scores[topic_family] = score
 
         self._apply_emotion_bias(scores, emotion_label, text)
+        self._apply_mood_bias(scores, mood_state)
         selected_topic = self._pick_topic(scores, matches_by_topic, recent_topics, continuity_marker)
         selected_matches = matches_by_topic.get(selected_topic, [])
         continuity = self._resolve_continuity(selected_topic, last_topic, continuity_marker)
-        response_intent = self._resolve_intent(text, emotion_label, continuity)
-        follow_up_style = self._resolve_follow_up_style(text, emotion_label, intensity)
-        mood_hint = self._resolve_mood_hint(emotion_label, continuity)
+        response_intent = self._resolve_intent(text, emotion_label, continuity, push_intensity, quiet_hours)
+        follow_up_style = self._resolve_follow_up_style(text, emotion_label, intensity, push_intensity, quiet_hours, sensitive_mode)
+        mood_hint = self._resolve_mood_hint(emotion_label, continuity, mood_state, quiet_hours)
         focus_points = self._build_focus_points(selected_topic, selected_matches)
-        avoid_patterns = self._build_avoid_patterns(emotion_label, continuity, recent_topics, selected_topic)
+        avoid_patterns = self._build_avoid_patterns(
+            emotion_label,
+            continuity,
+            recent_topics,
+            selected_topic,
+            push_intensity,
+            quiet_hours,
+            sensitive_mode,
+        )
 
         return ConversationPlan(
             topic_family=selected_topic,
@@ -291,6 +315,9 @@ class ConversationPlanner:
             matched_keywords=selected_matches[:3],
             recent_topics=recent_topics,
             avoid_patterns=avoid_patterns,
+            boundary_mode="sensitive" if sensitive_mode else "standard",
+            push_intensity=push_intensity,
+            quiet_hours=quiet_hours,
         )
 
     def _extract_recent_topics(self, recent_history: Sequence[Dict[str, Any]] | None) -> List[str]:
@@ -325,6 +352,14 @@ class ConversationPlanner:
             return max(0.0, min(1.0, float(raw)))
         return 0.5
 
+    def _extract_push_intensity(self, consent_profile: Dict[str, Any] | None) -> str:
+        if not consent_profile:
+            return "medium"
+        raw = consent_profile.get("push_intensity")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+        return "medium"
+
     def _apply_emotion_bias(self, scores: Dict[str, float], emotion_label: str, text: str) -> None:
         if emotion_label in NEGATIVE_EMOTIONS:
             scores["悩み・気持ち整理"] += 1.7
@@ -335,6 +370,20 @@ class ConversationPlanner:
             scores["趣味・好きなもの"] += 0.8
         elif emotion_label in SURPRISED_EMOTIONS:
             scores["最近のできごと"] += 1.2
+
+    def _apply_mood_bias(self, scores: Dict[str, float], mood_state: str | None) -> None:
+        if mood_state == "心配":
+            scores["悩み・気持ち整理"] += 0.8
+            scores["体調・生活リズム"] += 0.4
+        elif mood_state == "陽気":
+            scores["最近のできごと"] += 0.5
+            scores["趣味・好きなもの"] += 0.5
+        elif mood_state == "哲学":
+            scores["将来・目標"] += 0.7
+        elif mood_state == "いたずら":
+            scores["軽い雑談"] += 0.4
+        elif mood_state == "穏やか":
+            scores["最近のできごと"] += 0.2
 
     def _pick_topic(
         self,
@@ -375,17 +424,28 @@ class ConversationPlanner:
             return "話題転換"
         return "導入"
 
-    def _resolve_intent(self, text: str, emotion_label: str, continuity: str) -> str:
+    def _resolve_intent(
+        self,
+        text: str,
+        emotion_label: str,
+        continuity: str,
+        push_intensity: str,
+        quiet_hours: bool,
+    ) -> str:
         asks_advice = any(marker in text for marker in ADVICE_MARKERS)
         asks_question = any(marker in text for marker in QUESTION_MARKERS)
 
+        if quiet_hours and emotion_label in NEGATIVE_EMOTIONS:
+            return "静かに安心感を優先して受け止める"
         if emotion_label in NEGATIVE_EMOTIONS and asks_advice:
-            return "共感しつつ整理する"
+            return "やわらかく共感しつつ整理する" if push_intensity == "soft" else "共感しつつ整理する"
         if emotion_label in NEGATIVE_EMOTIONS:
             return "安心感を優先して受け止める"
         if emotion_label in POSITIVE_EMOTIONS:
             return "一緒に喜びを広げる"
         if asks_advice:
+            if push_intensity == "soft":
+                return "押しつけず選択肢をそっと示す"
             return "やさしく提案する"
         if continuity == "継続":
             return "前の流れを保って深める"
@@ -393,14 +453,40 @@ class ConversationPlanner:
             return "答えつつ自然に広げる"
         return "気軽に広げる"
 
-    def _resolve_follow_up_style(self, text: str, emotion_label: str, intensity: float) -> str:
+    def _resolve_follow_up_style(
+        self,
+        text: str,
+        emotion_label: str,
+        intensity: float,
+        push_intensity: str,
+        quiet_hours: bool,
+        sensitive_mode: bool,
+    ) -> str:
+        if sensitive_mode:
+            return "追加質問はせず、境界を尊重する"
+        if quiet_hours or push_intensity == "soft":
+            return "質問は控えめに、必要なら1つまで"
         if emotion_label in NEGATIVE_EMOTIONS and intensity >= 0.65:
             return "確認のための短い質問を1つまで"
         if any(marker in text for marker in ADVICE_MARKERS):
             return "提案が必要なときだけ補足質問をする"
         return "自然ならやわらかい質問を1つだけ"
 
-    def _resolve_mood_hint(self, emotion_label: str, continuity: str) -> str:
+    def _resolve_mood_hint(
+        self,
+        emotion_label: str,
+        continuity: str,
+        mood_state: str | None,
+        quiet_hours: bool,
+    ) -> str:
+        if quiet_hours:
+            return "夜間モードとして静かで低刺激なトーンを保つ"
+        if mood_state == "心配":
+            return "慎重に安心感を優先する"
+        if mood_state == "陽気":
+            return "少し明るめに親しみを出す"
+        if mood_state == "哲学":
+            return "やや内省的で落ち着いたトーンにする"
         if emotion_label in NEGATIVE_EMOTIONS:
             return "決めつけず、落ち着いて寄り添う"
         if emotion_label in POSITIVE_EMOTIONS:
@@ -422,15 +508,46 @@ class ConversationPlanner:
         continuity: str,
         recent_topics: List[str],
         selected_topic: str,
+        push_intensity: str,
+        quiet_hours: bool,
+        sensitive_mode: bool,
     ) -> List[str]:
-        avoid_patterns = ["二文を超えて長引かせない", "質問を詰め込みすぎない"]
+        avoid_patterns: List[str] = []
+        if sensitive_mode:
+            avoid_patterns.append("個人特定情報や敏感話題を深追いしない")
+        avoid_patterns.extend(["二文を超えて長引かせない", "質問を詰め込みすぎない"])
         if emotion_label in NEGATIVE_EMOTIONS:
             avoid_patterns.append("強い断定や押しつけを避ける")
+        if push_intensity == "soft":
+            avoid_patterns.append("結論を急がず、提案を押しつけない")
+        if quiet_hours:
+            avoid_patterns.append("テンションを上げすぎず静かに返す")
         if continuity == "話題転換":
             avoid_patterns.append("前の話題を急に切り捨てた印象を出さない")
         if recent_topics.count(selected_topic) >= 2:
             avoid_patterns.append("同じ切り口を繰り返し押し込まない")
-        return avoid_patterns[:3]
+        unique_patterns: List[str] = []
+        for pattern in avoid_patterns:
+            if pattern not in unique_patterns:
+                unique_patterns.append(pattern)
+        return unique_patterns[:3]
+
+    def _detect_sensitive_mode(self, text: str, consent_profile: Dict[str, Any] | None) -> bool:
+        if any(marker in text for marker in SENSITIVE_MARKERS):
+            return True
+        if not consent_profile:
+            return False
+        private_topics = consent_profile.get("private_topics")
+        if not isinstance(private_topics, list):
+            return False
+        for topic in private_topics:
+            if not isinstance(topic, str) or not topic:
+                continue
+            if topic in text:
+                return True
+            if topic == "個人特定情報" and any(marker in text for marker in SENSITIVE_MARKERS):
+                return True
+        return False
 
 
 def _normalise_text(text: str) -> str:

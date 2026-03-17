@@ -57,3 +57,44 @@ def test_planner_uses_supportive_intent_for_negative_advice_request() -> None:
     assert plan.topic_family == "悩み・気持ち整理"
     assert plan.response_intent == "共感しつつ整理する"
     assert "確認" in plan.follow_up_style
+
+
+def test_planner_softens_reply_during_quiet_hours() -> None:
+    planner = ConversationPlanner()
+
+    plan = planner.plan(
+        "まだ眠れなくて少し不安なんだ。",
+        {"primary_emotions": ["sad"], "intensity": 0.7},
+        mood_state="心配",
+        consent_profile={
+            "night_mode": True,
+            "push_intensity": "soft",
+            "private_topics": [],
+            "learning_paused": False,
+        },
+        local_hour=23,
+    )
+
+    assert plan.quiet_hours is True
+    assert plan.follow_up_style == "質問は控えめに、必要なら1つまで"
+    assert "夜間モード" in plan.mood_hint
+
+
+def test_planner_respects_sensitive_private_topics() -> None:
+    planner = ConversationPlanner()
+
+    plan = planner.plan(
+        "住所と本名を聞かれてすごく嫌だった。",
+        {"primary_emotions": ["sad"], "intensity": 0.8},
+        consent_profile={
+            "night_mode": False,
+            "push_intensity": "medium",
+            "private_topics": ["個人特定情報"],
+            "learning_paused": False,
+        },
+        local_hour=14,
+    )
+
+    assert plan.boundary_mode == "sensitive"
+    assert "個人特定情報" not in plan.response_intent
+    assert any("深追い" in pattern or "敏感" in pattern for pattern in plan.avoid_patterns)
