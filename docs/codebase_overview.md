@@ -115,7 +115,7 @@
 
 ## 次にやると効果が大きい整理
 
-1. `api/main.py` を router ごとに分割する
+1. `api/main.py` に残っている chat / websocket / `VtuberAI` 本体をさらに分割する
 2. `legacy/` 配下の旧構成を削除するか、資料として残すか方針を決める
 3. UI の API デモパネルを `features/devtools` 的にまとめる
 4. 最小限のフロントテストを追加する
