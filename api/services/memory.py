@@ -12,6 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from ..db.models import Episode, Memory
+from .episodes import parse_episode_text
 
 logger = logging.getLogger(__name__)
 
@@ -50,21 +51,14 @@ _AUTO_MEMORY_SIGNALS = (
 
 def _extract_memory_source_text(text: str) -> str:
     """Prefer the user-authored portion of a stored turn transcript."""
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if not lines:
-        return ""
-
-    user_lines: List[str] = []
-    for line in lines:
-        lowered = line.lower()
-        if lowered.startswith("user:"):
-            user_lines.append(line.split(":", 1)[1].strip())
-        elif line.startswith("ユーザー:"):
-            user_lines.append(line.split(":", 1)[1].strip())
-
-    if user_lines:
-        return " ".join(part for part in user_lines if part).strip()
-    return " ".join(lines).strip()
+    parsed = parse_episode_text(text)
+    user_text = parsed.get("user_text", "").strip()
+    if user_text:
+        return user_text
+    assistant_text = parsed.get("assistant_text", "").strip()
+    if assistant_text:
+        return assistant_text
+    return " ".join(line.strip() for line in (text or "").splitlines() if line.strip()).strip()
 
 
 def _generate_summary(text: str, max_length: int = 280) -> str:

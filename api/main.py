@@ -59,7 +59,7 @@ from .routers.features import router as features_router
 from .schemas import AudioInput, TextInput, TranscriptionResponse
 from .services.consent import get_consent_setting
 from .services.conversation_planner import ConversationPlan, ConversationPlanner
-from .services.episodes import build_episode_tags, record_episode
+from .services.episodes import build_episode_tags, build_recent_episode_context, record_episode
 from .services.memory import build_memory_context
 from .services.memory import promote_episode_to_memory_if_relevant
 from .services.mood import get_recent_moods
@@ -400,12 +400,28 @@ class VtuberAI:
         if isinstance(value, (np.integer, np.int32, np.int64)):
             return int(value)
         return str(value)
-    def _build_message_history(self, limit: int = 3) -> List[Dict[str, str]]:
+    def _build_message_history(
+        self,
+        limit: int = 3,
+        persistent_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, str]]:
         history_messages: List[Dict[str, str]] = []
         recent_pairs = getattr(self.bandit, 'conversation_history', [])[-limit:]
         for entry in recent_pairs:
             user_text = entry.get('user_input') if isinstance(entry, dict) else None
             assistant_text = entry.get('response') if isinstance(entry, dict) else None
+            if user_text:
+                history_messages.append({'role': 'user', 'content': str(user_text)})
+            if assistant_text:
+                history_messages.append({'role': 'assistant', 'content': str(assistant_text)})
+        if history_messages:
+            return history_messages
+
+        for entry in (persistent_history or [])[-limit:]:
+            if not isinstance(entry, dict):
+                continue
+            user_text = entry.get('user_text')
+            assistant_text = entry.get('assistant_text')
             if user_text:
                 history_messages.append({'role': 'user', 'content': str(user_text)})
             if assistant_text:
@@ -429,6 +445,7 @@ class VtuberAI:
                 'timezone': (runtime_context or {}).get('timezone'),
                 'local_hour': (runtime_context or {}).get('local_hour'),
                 'preferences': (runtime_context or {}).get('preferences'),
+                'recent_episode_context': (runtime_context or {}).get('recent_episode_context'),
                 'memory_context': (runtime_context or {}).get('memory_context'),
             },
             'response_guidelines': [
@@ -436,6 +453,7 @@ class VtuberAI:
                 '2文目は会話プランに沿って深掘り・提案・共感のいずれかを自然に行う。',
                 '質問は必要なときだけ1つ、二文以内に収める。',
                 '話題ラベルをそのまま言わず、自然な会話として返す。',
+                '直近の会話文脈があれば、それを踏まえて自然に続ける。',
                 '関連する記憶があっても、不自然に引用せず会話に溶かす。',
                 '好みの口調は反映するが、説明的なメタ発言はしない。'
             ]
@@ -712,6 +730,7 @@ class VtuberAI:
                 },
                 'tts_voice': 'voicevox:normal',
             },
+            'recent_episode_context': [],
             'memory_context': [],
         }
         session = get_session()
@@ -720,6 +739,7 @@ class VtuberAI:
             mood_state, _ = get_recent_moods(session, user.id, limit=5)
             consent = get_consent_setting(session, user.id)
             preferences = get_preference_profile(session, user.id)
+            recent_episode_context = build_recent_episode_context(session, user.id, query=current_text, limit=3)
             memory_context = build_memory_context(session, user.id, query=current_text, limit=3)
             timezone_name = getattr(user, 'timezone', None) or 'Asia/Tokyo'
             return {
@@ -735,6 +755,7 @@ class VtuberAI:
                     'learning_paused': bool(consent.learning_paused),
                 },
                 'preferences': preferences,
+                'recent_episode_context': recent_episode_context,
                 'memory_context': memory_context,
             }
         except Exception as exc:
@@ -755,7 +776,11 @@ class VtuberAI:
             emotion_data = self.emotion_analyzer.analyze_emotion(text)
         if runtime_context is None:
             runtime_context = self._build_runtime_context(None)
-        recent_history = getattr(self.bandit, 'conversation_history', [])[-4:]
+        persisted_recent_history = runtime_context.get('recent_episode_context')
+        if not isinstance(persisted_recent_history, list):
+            persisted_recent_history = []
+        live_recent_history = getattr(self.bandit, 'conversation_history', [])[-3:]
+        recent_history = list(persisted_recent_history)[-2:] + list(live_recent_history)
         plan = self.conversation_planner.plan(
             user_text=text,
             emotion_payload=emotion_data,
@@ -766,7 +791,7 @@ class VtuberAI:
         )
         self.current_topic = plan.topic_family
         messages: List[Dict[str, str]] = [{'role': 'system', 'content': self.system_prompt}]
-        messages.extend(self._build_message_history())
+        messages.extend(self._build_message_history(persistent_history=runtime_context.get('recent_episode_context')))
         user_message = self._prepare_user_prompt(text, plan, emotion_data, runtime_context)
         messages.append({'role': 'user', 'content': user_message})
         if self.openai_client is None:
