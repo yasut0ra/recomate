@@ -4,6 +4,7 @@
 ## プロジェクトビジョン / ロードマップ
 
 - 相棒AIへの進化計画と優先タスクは `docs/recomate_codex_brief_v1.md` にまとめています。
+- `2026-03-18` 時点の現役構成と整理メモは `docs/codebase_overview.md` にまとめています。
 
 
 ## URL（完成版とは異なります）
@@ -36,7 +37,7 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 3. 別ターミナルでフロントエンドを起動します。
 
    ```bash
-   cd recomate/ui
+   cd ui
    npm install
    npm run dev
    ```
@@ -44,6 +45,7 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 4. Electron で実行する場合は、FastAPI が `http://127.0.0.1:8000` で稼働していることを確認してください。
 
 > 旧来の Node/Express サーバーは廃止しました。バックエンドは Python/FastAPI に統一されています。
+> ただし `src/` や `electron/main.js` には旧構成のコードが一部残っているため、現状整理は `docs/codebase_overview.md` を参照してください。
 
 ## データベース / マイグレーション
 

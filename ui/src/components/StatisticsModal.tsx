@@ -12,7 +12,7 @@ import {
   Bar,
   ResponsiveContainer,
 } from 'recharts';
-import { useChatContext } from '../context/ChatContext';
+import { useChatContext } from '../context/useChatContext';
 
 interface StatisticsModalProps {
   onClose: () => void;

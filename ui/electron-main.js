@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron';
-import path from 'path';
+
+const DEV_SERVER_URL = process.env.RECOMATE_UI_URL || 'http://localhost:5173';
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -11,7 +12,7 @@ function createWindow() {
     },
   });
 
-  win.loadURL('http://localhost:5173');
+  win.loadURL(DEV_SERVER_URL);
 }
 
 app.whenReady().then(createWindow);

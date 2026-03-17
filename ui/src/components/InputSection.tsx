@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Mic, Send } from 'lucide-react';
-import { useChatContext } from '../context/ChatContext';
+import { useChatContext } from '../context/useChatContext';
 
 const SUPPORTED_MIME_TYPES = [
   'audio/webm;codecs=opus',

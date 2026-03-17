@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { useChatContext } from '../context/ChatContext';
+import { useChatContext } from '../context/useChatContext';
 
 const CHARACTER_EXPRESSIONS: Record<string, Record<string, string>> = {
   rico: {

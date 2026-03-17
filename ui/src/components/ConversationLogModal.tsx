@@ -1,6 +1,6 @@
 import React from 'react';
 import { X, Clock, MessageSquare, ThumbsUp, Trash2 } from 'lucide-react';
-import { useChatContext } from '../context/ChatContext';
+import { useChatContext } from '../context/useChatContext';
 
 interface ConversationLogModalProps {
   onClose: () => void;

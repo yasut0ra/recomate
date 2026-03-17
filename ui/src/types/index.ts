@@ -83,13 +83,28 @@ export interface MemoryRecord {
   last_ref?: string | null;
 }
 
+export interface AgentRequestPayload {
+  message?: string;
+  generated_at?: string;
+  acknowledged_at?: string;
+  ack_reason?: string;
+  [key: string]: unknown;
+}
+
 export interface AgentRequestRecord {
   id: string;
   user_id: string;
   kind: string;
-  payload?: Record<string, unknown> | null;
+  payload?: AgentRequestPayload | null;
   ts: string;
   accepted?: boolean | null;
+}
+
+export interface MoodHistoryEntry {
+  state: string;
+  trigger?: string | null;
+  ts?: string | null;
+  weights: Record<string, unknown>;
 }
 
 export interface MoodStateResponse {
@@ -98,11 +113,11 @@ export interface MoodStateResponse {
   previous_state?: string | null;
   trigger?: string | null;
   weights: Record<string, unknown>;
-  history: Array<Record<string, unknown>>;
+  history: MoodHistoryEntry[];
 }
 
 export interface MoodHistoryResponse {
   user_id: string;
   current_state: string;
-  history: Array<Record<string, unknown>>;
+  history: MoodHistoryEntry[];
 }

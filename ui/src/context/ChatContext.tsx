@@ -1,6 +1,4 @@
 import React, {
-  createContext,
-  useContext,
   useMemo,
   useState,
   useCallback,
@@ -10,6 +8,7 @@ import React, {
 import type { ReactNode } from 'react';
 import { fetchTopicStats, postChatMessage } from '../api/chatApi';
 import { requestSpeechSynthesis, requestTranscription } from '../api/audioApi';
+import { ChatContext } from './chat-context';
 import type {
   CharacterEmotion,
   CharacterModel,
@@ -18,28 +17,6 @@ import type {
   ConversationHistoryEntry,
   TopicStatsResponse,
 } from '../types';
-
-interface ChatContextType {
-  messages: ChatMessage[];
-  sendMessage: (text: string) => Promise<void>;
-  isProcessing: boolean;
-  error: string | null;
-  characterEmotion: CharacterEmotion;
-  setCharacterEmotion: (emotion: CharacterEmotion) => void;
-  characterModel: CharacterModel;
-  setCharacterModel: (model: CharacterModel) => void;
-  resetConversation: () => void;
-  apiKey: string | null;
-  setApiKey: (key: string | null) => void;
-  transcribeAudio: (audio: Float32Array, sampleRate: number) => Promise<string | null>;
-  isTranscribing: boolean;
-  voiceEnabled: boolean;
-  setVoiceEnabled: (value: boolean) => void;
-  playAssistantSpeech: (text: string) => Promise<void>;
-  topicStats: TopicStatsResponse | null;
-  isTopicStatsLoading: boolean;
-  refreshTopicStats: () => Promise<void>;
-}
 
 const API_KEY_STORAGE = 'recomate:api-key';
 const VOICE_ENABLED_STORAGE = 'recomate:voice-enabled';
@@ -51,8 +28,6 @@ const createInitialAssistantMessage = (): ChatMessage => ({
   timestamp: new Date().toISOString(),
   emotion: 'happy',
 });
-
-const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 const emotionMap: Record<string, CharacterEmotion> = {
   happy: 'happy',
@@ -424,7 +399,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
       setIsProcessing(false);
     }
-  }, [apiKey]);
+  }, [apiKey, playAssistantSpeech, voiceEnabled]);
 
   const value = useMemo(() => ({
     messages,
@@ -467,12 +442,4 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   ]);
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
-};
-
-export const useChatContext = () => {
-  const context = useContext(ChatContext);
-  if (context === undefined) {
-    throw new Error('useChatContext must be used within a ChatProvider');
-  }
-  return context;
 };

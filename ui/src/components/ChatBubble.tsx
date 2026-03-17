@@ -1,7 +1,7 @@
 import React from 'react';
 import { Volume2 } from 'lucide-react';
 import type { ChatMessage } from '../types';
-import { useChatContext } from '../context/ChatContext';
+import { useChatContext } from '../context/useChatContext';
 
 interface ChatBubbleProps {
   message: ChatMessage;

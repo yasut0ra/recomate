@@ -1,54 +1,41 @@
-# React + TypeScript + Vite
+# recomate UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+`ui/` は recomate の現役フロントエンドです。React + TypeScript + Vite をベースにしつつ、開発中は Electron シェルからも起動できます。
 
-Currently, two official plugins are available:
+## 主要コマンド
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default tseslint.config({
-  extends: [
-    // Remove ...tseslint.configs.recommended and replace with this
-    ...tseslint.configs.recommendedTypeChecked,
-    // Alternatively, use this for stricter rules
-    ...tseslint.configs.strictTypeChecked,
-    // Optionally, add this for stylistic rules
-    ...tseslint.configs.stylisticTypeChecked,
-  ],
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+```bash
+npm install
+npm run dev
+npm run lint
+npm run build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+- `npm run dev`
+  - Vite と Electron を同時起動します。
+  - FastAPI は別途 `http://127.0.0.1:8000` で起動しておく前提です。
+- `npm run build`
+  - TypeScript ビルドと Vite の本番ビルドを実行します。
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## 構成
 
-export default tseslint.config({
-  plugins: {
-    // Add the react-x and react-dom plugins
-    'react-x': reactX,
-    'react-dom': reactDom,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended typescript rules
-    ...reactX.configs['recommended-typescript'].rules,
-    ...reactDom.configs.recommended.rules,
-  },
-})
-```
+- `src/App.tsx`
+  - 画面全体の合成。
+- `src/context/ChatContext.tsx`
+  - 会話送信、音声再生、文字起こし、トピック統計の管理。
+- `src/context/useChatContext.ts`
+  - チャットコンテキスト用フック。
+- `src/api/`
+  - FastAPI との通信レイヤー。
+- `src/components/`
+  - 会話 UI と、リチュアル/メモリ/ムード/Agent Request の検証パネル群。
+
+## API 接続先
+
+- デフォルトは `http://127.0.0.1:8000`
+- `VITE_API_BASE_URL` で変更可能
+
+## 備考
+
+- `ui/electron-main.js` は現行の簡易 Electron エントリです。
+- ルートの `electron/main.js` は旧構成の残置コードです。

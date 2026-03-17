@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Volume2, Key, User } from 'lucide-react';
-import { useChatContext } from '../context/ChatContext';
+import { useChatContext } from '../context/useChatContext';
 import type { CharacterModel } from '../types';
 
 interface SettingsModalProps {

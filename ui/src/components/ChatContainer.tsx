@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { useChatContext } from '../context/ChatContext';
+import { useChatContext } from '../context/useChatContext';
 import ChatBubble from './ChatBubble';
 
 const ChatContainer: React.FC = () => {

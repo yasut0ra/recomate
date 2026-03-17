@@ -8,7 +8,7 @@ export const resolveBaseUrl = () => {
   if (!trimmed) {
     return DEFAULT_BASE_URL;
   }
-  return trimmed.replace(/\/\$/, '');
+  return trimmed.replace(/\/$/, '');
 };
 
 interface PostChatOptions {
