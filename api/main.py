@@ -59,7 +59,9 @@ from .routers.features import router as features_router
 from .schemas import AudioInput, TextInput, TranscriptionResponse
 from .services.consent import get_consent_setting
 from .services.conversation_planner import ConversationPlan, ConversationPlanner
+from .services.memory import build_memory_context
 from .services.mood import get_recent_moods
+from .services.preferences import get_preference_profile
 from .services.users import resolve_local_user
 from .topic_bandit import TopicBandit
 
@@ -140,7 +142,7 @@ async def chat(input_data: TextInput):
         vtuber.update_api_key(input_data.api_key)
         emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data.text)
         emotion = vtuber._emotion_label_from_payload(emotion_data)
-        runtime_context = vtuber._build_runtime_context(input_data.user_id)
+        runtime_context = vtuber._build_runtime_context(input_data.user_id, current_text=input_data.text)
         response = vtuber._generate_response(input_data.text, emotion, emotion_data, runtime_context)
         
         return {
@@ -227,7 +229,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         parsed_user_id = UUID(raw_user_id)
                     except ValueError:
                         parsed_user_id = None
-                runtime_context = vtuber._build_runtime_context(parsed_user_id)
+                runtime_context = vtuber._build_runtime_context(parsed_user_id, current_text=input_data["text"])
                 response = vtuber._generate_response(input_data["text"], emotion, emotion_data, runtime_context)
 
                 await websocket.send_json({
@@ -421,12 +423,16 @@ class VtuberAI:
                 'mood_state': (runtime_context or {}).get('mood_state'),
                 'timezone': (runtime_context or {}).get('timezone'),
                 'local_hour': (runtime_context or {}).get('local_hour'),
+                'preferences': (runtime_context or {}).get('preferences'),
+                'memory_context': (runtime_context or {}).get('memory_context'),
             },
             'response_guidelines': [
                 '1文目で感情や状況を短く受け止める。',
                 '2文目は会話プランに沿って深掘り・提案・共感のいずれかを自然に行う。',
                 '質問は必要なときだけ1つ、二文以内に収める。',
-                '話題ラベルをそのまま言わず、自然な会話として返す。'
+                '話題ラベルをそのまま言わず、自然な会話として返す。',
+                '関連する記憶があっても、不自然に引用せず会話に溶かす。',
+                '好みの口調は反映するが、説明的なメタ発言はしない。'
             ]
         }
         payload_text = json.dumps(payload, ensure_ascii=False, default=self._json_default)
@@ -608,7 +614,7 @@ class VtuberAI:
             logger.debug('Failed to resolve local hour for timezone %s', resolved_timezone, exc_info=True)
         return datetime.now(ZoneInfo('Asia/Tokyo')).hour
 
-    def _build_runtime_context(self, user_id: Optional[UUID]) -> Dict[str, Any]:
+    def _build_runtime_context(self, user_id: Optional[UUID], current_text: str = '') -> Dict[str, Any]:
         default_context = {
             'user_id': str(user_id) if user_id else None,
             'display_name': 'Local User',
@@ -621,12 +627,28 @@ class VtuberAI:
                 'private_topics': ['個人特定情報'],
                 'learning_paused': False,
             },
+            'preferences': {
+                'tone': 0.6,
+                'humor': 0.5,
+                'style_notes': {},
+                'style_summary': {
+                    'tone_style': '親しみやすく自然体',
+                    'humor_style': '必要なときだけ軽くユーモアを混ぜる',
+                    'length_style': '短く収める',
+                    'metaphor_style': '比喩は必要なときだけ軽く使う',
+                    'formality_style': 'フラットで自然な口調',
+                },
+                'tts_voice': 'voicevox:normal',
+            },
+            'memory_context': [],
         }
         session = get_session()
         try:
             user = resolve_local_user(session, user_id)
             mood_state, _ = get_recent_moods(session, user.id, limit=5)
             consent = get_consent_setting(session, user.id)
+            preferences = get_preference_profile(session, user.id)
+            memory_context = build_memory_context(session, user.id, query=current_text, limit=3)
             timezone_name = getattr(user, 'timezone', None) or 'Asia/Tokyo'
             return {
                 'user_id': str(user.id),
@@ -640,6 +662,8 @@ class VtuberAI:
                     'private_topics': list(consent.private_topics or []),
                     'learning_paused': bool(consent.learning_paused),
                 },
+                'preferences': preferences,
+                'memory_context': memory_context,
             }
         except Exception as exc:
             logger.debug('Failed to build runtime context for chat; using defaults: %s', exc)

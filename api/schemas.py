@@ -75,6 +75,24 @@ class ConsentUpdateRequest(BaseModel):
     learning_paused: Optional[bool] = None
 
 
+class PreferenceResponseModel(BaseModel):
+    user_id: UUID
+    tone: float
+    humor: float
+    style_notes: Dict[str, Any]
+    tts_voice: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PreferenceFeedbackRequest(BaseModel):
+    user_id: UUID
+    like: Optional[bool] = None
+    tone_delta: float = 0.0
+    length_delta: float = 0.0
+    metaphor_delta: float = 0.0
+
+
 class AlbumGenerateRequest(BaseModel):
     user_id: UUID
     week_id: Optional[str] = None

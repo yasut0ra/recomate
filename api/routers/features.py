@@ -25,6 +25,8 @@ from ..schemas import (
     MoodHistoryResponse,
     MoodStateResponse,
     MoodTransitionRequest,
+    PreferenceFeedbackRequest,
+    PreferenceResponseModel,
     RitualResponseModel,
 )
 from ..services.agent_requests import acknowledge_agent_request, generate_agent_request
@@ -32,6 +34,7 @@ from ..services.album import generate_weekly_album
 from ..services.consent import get_consent_setting, update_consent_setting
 from ..services.memory import commit_memory, search_memories
 from ..services.mood import get_recent_moods, transition_mood
+from ..services.preferences import apply_preference_feedback, ensure_preference
 from ..services.rituals import get_morning_ritual, get_night_ritual
 
 logger = logging.getLogger(__name__)
@@ -116,6 +119,28 @@ def patch_consent_endpoint(
         logger.exception("Failed to update consent settings: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to update consent settings")
     return ConsentResponseModel.model_validate(record)
+
+
+@router.post("/api/preferences/feedback", response_model=PreferenceResponseModel)
+def preference_feedback_endpoint(payload: PreferenceFeedbackRequest, session: SessionDep):
+    try:
+        consent = get_consent_setting(session=session, user_id=payload.user_id)
+        if consent.learning_paused:
+            record = ensure_preference(session, payload.user_id)
+            return PreferenceResponseModel.model_validate(record)
+
+        record = apply_preference_feedback(
+            session=session,
+            user_id=payload.user_id,
+            like=payload.like,
+            tone_delta=payload.tone_delta,
+            length_delta=payload.length_delta,
+            metaphor_delta=payload.metaphor_delta,
+        )
+    except Exception as exc:
+        logger.exception("Failed to apply preference feedback: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to apply preference feedback")
+    return PreferenceResponseModel.model_validate(record)
 
 
 @router.post("/api/album/weekly/generate", response_model=AlbumWeeklyResponseModel)
