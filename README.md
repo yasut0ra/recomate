@@ -29,6 +29,16 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
    npm --prefix ui install
    ```
 
+   任意機能を使う場合:
+
+   ```bash
+   pip install -r api/requirements-optional.txt
+   ```
+
+   - 基本の `api/requirements.txt` は API の最小起動用です
+   - 音声合成や音声認識などの任意機能は `api/requirements-optional.txt` に分けています
+   - テストを実行するなら `pip install -r api/requirements-dev.txt` も入れてください
+
 2. ルートディレクトリで起動します。
 
    ```bash
@@ -37,7 +47,8 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
 
    - `npm run dev`: FastAPI + Vite + Electron
    - `npm run dev:web`: FastAPI + Vite
-   - `venv/` または `.venv/` があれば自動検出して API 起動に使います
+   - `npm test`: `pytest` による最小回帰テスト
+   - `venv/` または `.venv/` があれば自動検出して API 起動とテスト実行に使います
 
 ### 手動で分けて起動する場合
 
@@ -49,6 +60,18 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
    pip install -r api/requirements.txt
    ```
 
+   任意機能が必要なら:
+
+   ```bash
+   pip install -r api/requirements-optional.txt
+   ```
+
+   テストも実行するなら:
+
+   ```bash
+   pip install -r api/requirements-dev.txt
+   ```
+
 2. FastAPI サーバーを起動します。
 
    ```bash
@@ -56,7 +79,7 @@ https://spontaneous-cascaron-d7c26e.netlify.app/
    ```
 
    - OpenAI API キーは `.env` で `OPENAI_API_KEY` として指定するか、UI の設定モーダルから入力できます。
-   - 音声合成（VOICEVOX）を使用しない場合はデフォルトで無効です。有効化したい場合は `ENABLE_TTS=true` を環境変数に設定してください。
+   - 音声合成（VOICEVOX）を使用しない場合はデフォルトで無効です。有効化したい場合は `ENABLE_TTS=true` を環境変数に設定し、`api/requirements-optional.txt` も入れてください。
 
 3. 別ターミナルでフロントエンドを起動します。
 
@@ -76,6 +99,7 @@ npm run dev:web
 npm run dev:api
 npm run build
 npm run lint
+npm test
 ```
 
 > 旧来の Node/Express サーバーは廃止しました。バックエンドは Python/FastAPI に統一されています。

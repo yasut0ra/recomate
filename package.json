@@ -12,7 +12,7 @@
     "start": "node scripts/run-api.cjs --host 0.0.0.0",
     "build": "npm --prefix ui run build",
     "lint": "npm --prefix ui run lint",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node scripts/run-pytest.cjs"
   },
   "repository": {
     "type": "git",

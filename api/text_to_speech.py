@@ -26,6 +26,10 @@ class TextToSpeech:
         # VOICEVOXの状態確認
         self._check_voicevox_status()
 
+    def _request(self, method, path, **kwargs):
+        timeout = kwargs.pop('timeout', 10)
+        return requests.request(method, f"{self.base_url}{path}", timeout=timeout, **kwargs)
+
     def _check_voicevox_status(self):
         """VOICEVOXの状態を確認"""
         max_retries = 5
@@ -33,7 +37,7 @@ class TextToSpeech:
         
         for i in range(max_retries):
             try:
-                response = requests.get(f"{self.base_url}/version")
+                response = self._request('GET', '/version', timeout=3)
                 if response.status_code == 200:
                     version = response.text
                     print(f"VOICEVOX version: {version}")
@@ -71,21 +75,24 @@ class TextToSpeech:
             }
             
             # 音声合成のリクエスト
-            response = requests.post(f"{self.base_url}/audio_query", params=params)
+            response = self._request('POST', '/audio_query', params=params)
             if response.status_code != 200:
                 raise Exception(f"音声合成のリクエストに失敗: {response.status_code}")
             
             # 音声を生成
-            response = requests.post(f"{self.base_url}/synthesis", 
-                                  params=params,
-                                  data=json.dumps(response.json()))
+            response = self._request(
+                'POST',
+                '/synthesis',
+                params=params,
+                data=json.dumps(response.json()),
+            )
             if response.status_code != 200:
                 raise Exception(f"音声の生成に失敗: {response.status_code}")
             
             return response.content
             
         except requests.exceptions.RequestException as e:
-            raise Exception(f"VOICEVOXとの通信でエラーが発生: {str(e)}")
+            raise RuntimeError(f"VOICEVOXとの通信でエラーが発生: {str(e)}")
 
     def speak(self, text):
         """テキストを音声に変換して再生"""

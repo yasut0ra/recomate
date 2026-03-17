@@ -104,10 +104,19 @@
 - どちらも FastAPI を含めて起動する
 - UI 単体確認が必要な場合だけ `ui/` 配下のスクリプトを直接使う
 
+## 依存関係の現行方針
+
+- `api/requirements.txt`
+  - API の最小起動に必要な依存のみ
+- `api/requirements-optional.txt`
+  - 音声合成、音声認識、実験用ローカル機能の依存
+- `api/requirements-dev.txt`
+  - 現状は `pytest` を定義。回帰テスト実行用
+
 ## 次にやると効果が大きい整理
 
 1. `api/main.py` を router ごとに分割する
 2. `legacy/` 配下の旧構成を削除するか、資料として残すか方針を決める
 3. UI の API デモパネルを `features/devtools` 的にまとめる
-4. pytest と最小限のフロントテストを追加する
+4. 最小限のフロントテストを追加する
 5. `TopicBandit` と `EmotionAnalyzer` の OpenAI 呼び出しをサービス境界の内側に寄せる

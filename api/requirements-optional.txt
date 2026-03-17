@@ -1,0 +1,13 @@
+# Optional runtime features for local experiments.
+# Install after api/requirements.txt if you want these features.
+
+# Voice / audio features
+requests>=2.32.0
+pygame>=2.5.0
+SpeechRecognition>=3.10.0
+
+# Legacy / experimental local packages
+sounddevice>=0.4.6
+opencv-python>=4.8.0.76
+pillow>=10.0.0
+PyOpenGL>=3.1.7

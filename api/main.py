@@ -8,6 +8,7 @@ import random
 import tempfile
 import threading
 import time
+import wave
 from contextlib import asynccontextmanager
 from datetime import datetime
 from dataclasses import asdict
@@ -15,7 +16,6 @@ from typing import Any, Dict, List, Optional, Tuple, Literal
 from uuid import UUID
 
 import numpy as np
-import soundfile as sf
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,11 +39,6 @@ try:
 except Exception as exc:
     pygame = None  # type: ignore[assignment]
     OPTIONAL_IMPORT_ERRORS.append(("pygame", exc))
-try:
-    import sounddevice as sd  # type: ignore
-except Exception as exc:
-    sd = None  # type: ignore[assignment]
-    OPTIONAL_IMPORT_ERRORS.append(("sounddevice", exc))
 try:
     import speech_recognition as sr  # type: ignore
 except Exception as exc:
@@ -835,7 +830,13 @@ class VtuberAI:
         try:
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
                 temp_file = tmp.name
-                sf.write(tmp.name, audio_array, sample_rate, subtype='PCM_16')
+                pcm_audio = np.clip(audio_array, -1.0, 1.0)
+                pcm_bytes = (pcm_audio * 32767).astype(np.int16).tobytes()
+                with wave.open(tmp.name, 'wb') as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(pcm_bytes)
             with sr.AudioFile(temp_file) as source:
                 audio = self.recognizer.record(source)
             result = self.recognizer.recognize_google(audio, language='ja-JP', show_all=True)
