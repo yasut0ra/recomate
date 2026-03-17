@@ -16,6 +16,55 @@ from ..db.models import Episode, Memory
 logger = logging.getLogger(__name__)
 
 _WORD_RE = re.compile(r"[A-Za-z0-9ぁ-んァ-ヶ一-龯ー']+")
+_MEMORY_STOPWORDS = {"user", "recomate", "assistant", "ユーザー", "相棒", "会話", "こと", "もの"}
+_AUTO_MEMORY_TOPICS = {"仕事・学び", "人間関係", "趣味・好きなもの", "体調・生活リズム", "悩み・気持ち整理", "将来・目標"}
+_AUTO_MEMORY_SIGNALS = (
+    "好き",
+    "苦手",
+    "大事",
+    "大切",
+    "誕生日",
+    "家族",
+    "友達",
+    "恋人",
+    "彼氏",
+    "彼女",
+    "上司",
+    "同僚",
+    "学校",
+    "仕事",
+    "進路",
+    "引っ越し",
+    "病院",
+    "通院",
+    "相談",
+    "不安",
+    "つらい",
+    "辛い",
+    "映画",
+    "音楽",
+    "旅行",
+    "推し",
+)
+
+
+def _extract_memory_source_text(text: str) -> str:
+    """Prefer the user-authored portion of a stored turn transcript."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    user_lines: List[str] = []
+    for line in lines:
+        lowered = line.lower()
+        if lowered.startswith("user:"):
+            user_lines.append(line.split(":", 1)[1].strip())
+        elif line.startswith("ユーザー:"):
+            user_lines.append(line.split(":", 1)[1].strip())
+
+    if user_lines:
+        return " ".join(part for part in user_lines if part).strip()
+    return " ".join(lines).strip()
 
 
 def _generate_summary(text: str, max_length: int = 280) -> str:
@@ -35,6 +84,8 @@ def _extract_keywords(text: str, limit: int = 8) -> List[str]:
     for word in candidates:
         if len(word) < 2:
             continue
+        if word in _MEMORY_STOPWORDS:
+            continue
         seen[word] = seen.get(word, 0) + 1
     ranked = sorted(seen.items(), key=lambda item: item[1], reverse=True)
     return [word for word, _ in ranked[:limit]]
@@ -52,8 +103,9 @@ def commit_memory(
     if episode is None:
         raise ValueError("Episode not found")
 
-    summary = (summary_override or "").strip() or _generate_summary(episode.text)
-    keywords_list = list(keywords_override or []) or _extract_keywords(episode.text)
+    source_text = _extract_memory_source_text(episode.text)
+    summary = (summary_override or "").strip() or _generate_summary(source_text)
+    keywords_list = list(keywords_override or []) or _extract_keywords(source_text)
 
     memory = Memory(
         user_id=episode.user_id,
@@ -114,6 +166,50 @@ def _memory_relevance_score(memory: Memory, query_terms: List[str], query_text: 
     return score
 
 
+def _looks_like_duplicate_memory(existing_memories: List[Memory], summary: str, keywords: List[str]) -> bool:
+    candidate_summary = summary.strip().lower()
+    candidate_keywords = set(keyword.lower() for keyword in keywords if keyword)
+    for memory in existing_memories:
+        existing_summary = (memory.summary_md or "").strip().lower()
+        existing_keywords = set(str(keyword).lower() for keyword in (memory.keywords or []))
+        if candidate_summary and candidate_summary == existing_summary:
+            return True
+        if candidate_summary and existing_summary and candidate_summary[:48] == existing_summary[:48]:
+            return True
+        if candidate_keywords and len(candidate_keywords & existing_keywords) >= 3:
+            return True
+    return False
+
+
+def should_promote_episode_to_memory(
+    text: str,
+    *,
+    topic_family: Optional[str],
+    emotion_payload: Optional[Dict[str, object]] = None,
+) -> bool:
+    """Heuristic gate for automatic memory creation."""
+    source_text = _extract_memory_source_text(text)
+    if len(source_text.strip()) < 12:
+        return False
+
+    keywords = _extract_keywords(source_text, limit=8)
+    intensity = 0.5
+    if isinstance(emotion_payload, dict):
+        raw_intensity = emotion_payload.get("intensity")
+        if isinstance(raw_intensity, (float, int)):
+            intensity = max(0.0, min(1.0, float(raw_intensity)))
+
+    if intensity >= 0.82:
+        return True
+    if any(signal in source_text for signal in _AUTO_MEMORY_SIGNALS):
+        return True
+    if topic_family in _AUTO_MEMORY_TOPICS and len(keywords) >= 3 and len(source_text) >= 22:
+        return True
+    if topic_family == "軽い雑談":
+        return False
+    return len(keywords) >= 4 and len(source_text) >= 30
+
+
 def select_relevant_memories(memories: List[Memory], query: Optional[str], limit: int = 3) -> List[Memory]:
     """Rank memory rows for use inside the conversation prompt."""
     if not memories:
@@ -170,3 +266,46 @@ def build_memory_context(session: Session, user_id: UUID, query: Optional[str], 
             }
         )
     return context
+
+
+def promote_episode_to_memory_if_relevant(
+    session: Session,
+    episode: Episode,
+    *,
+    topic_family: Optional[str],
+    emotion_payload: Optional[Dict[str, object]] = None,
+    learning_paused: bool = False,
+) -> Optional[Memory]:
+    """Automatically create a memory for meaningful turns."""
+    if learning_paused:
+        return None
+    if not should_promote_episode_to_memory(episode.text, topic_family=topic_family, emotion_payload=emotion_payload):
+        return None
+
+    source_text = _extract_memory_source_text(episode.text)
+    summary = _generate_summary(source_text, max_length=160)
+    keywords = _extract_keywords(source_text, limit=8)
+    recent_memories = (
+        session.execute(
+            sa.select(Memory)
+            .where(Memory.user_id == episode.user_id)
+            .order_by(Memory.created_at.desc())
+            .limit(8)
+        )
+        .scalars()
+        .all()
+    )
+    if _looks_like_duplicate_memory(recent_memories, summary, keywords):
+        return None
+
+    memory = Memory(
+        user_id=episode.user_id,
+        summary_md=summary,
+        keywords=keywords,
+        last_ref=datetime.now(timezone.utc),
+        pinned=False,
+    )
+    session.add(memory)
+    session.commit()
+    session.refresh(memory)
+    return memory

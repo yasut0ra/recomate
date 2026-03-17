@@ -28,6 +28,12 @@ export interface ChatApiResponse {
   response: string;
   emotion?: string | { primary_emotions?: string[] };
   conversation_history?: ConversationHistoryEntry[];
+  turn_metadata?: {
+    episode_id?: string | null;
+    memory_id?: string | null;
+    topic?: string | null;
+    user_id?: string | null;
+  };
 }
 
 export interface TopicMetric {

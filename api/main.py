@@ -59,7 +59,9 @@ from .routers.features import router as features_router
 from .schemas import AudioInput, TextInput, TranscriptionResponse
 from .services.consent import get_consent_setting
 from .services.conversation_planner import ConversationPlan, ConversationPlanner
+from .services.episodes import build_episode_tags, record_episode
 from .services.memory import build_memory_context
+from .services.memory import promote_episode_to_memory_if_relevant
 from .services.mood import get_recent_moods
 from .services.preferences import get_preference_profile
 from .services.users import resolve_local_user
@@ -148,7 +150,8 @@ async def chat(input_data: TextInput):
         return {
             "response": response,
             "emotion": emotion,
-            "conversation_history": vtuber.get_serialised_history()
+            "conversation_history": vtuber.get_serialised_history(),
+            "turn_metadata": vtuber.last_turn_metadata,
         }
     except Exception as e:
         print(f"Error in chat endpoint: {str(e)}")
@@ -235,7 +238,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "response": response,
                     "emotion": emotion,
-                    "conversation_history": vtuber.get_serialised_history()
+                    "conversation_history": vtuber.get_serialised_history(),
+                    "turn_metadata": vtuber.last_turn_metadata,
                 })
             except Exception as e:
                 print(f"Error in websocket chat: {str(e)}")
@@ -280,6 +284,7 @@ class VtuberAI:
         
 
         self.conversation_history = []
+        self.last_turn_metadata: Dict[str, Any] = {}
         
 
         self.emotion_analyzer = EmotionAnalyzer(client=self.openai_client)
@@ -441,6 +446,73 @@ class VtuberAI:
             'Use the conversation plan to decide tone, continuity, and whether to ask a follow-up.\n'
             + payload_text
         )
+
+    def _persist_generated_turn(
+        self,
+        *,
+        user_text: str,
+        response_text: str,
+        emotion: str,
+        emotion_payload: Optional[Dict[str, Any]],
+        runtime_context: Optional[Dict[str, Any]],
+        topic_family: Optional[str],
+    ) -> None:
+        self.last_turn_metadata = {}
+        if not runtime_context:
+            return
+
+        raw_user_id = runtime_context.get('user_id')
+        if not isinstance(raw_user_id, str) or not raw_user_id.strip():
+            return
+
+        try:
+            user_id = UUID(raw_user_id)
+        except ValueError:
+            logger.debug('Invalid runtime_context user_id: %s', raw_user_id)
+            return
+
+        session = get_session()
+        try:
+            user = resolve_local_user(session, user_id)
+            mood_state = runtime_context.get('mood_state')
+            consent = runtime_context.get('consent') or {}
+            tags = build_episode_tags(
+                topic_family=topic_family,
+                emotion_label=emotion,
+                mood_state=mood_state if isinstance(mood_state, str) else None,
+            )
+            episode = record_episode(
+                session,
+                user_id=user.id,
+                user_text=user_text,
+                assistant_text=response_text,
+                mood_user=emotion,
+                mood_ai=mood_state if isinstance(mood_state, str) else None,
+                tags=tags,
+            )
+            memory = promote_episode_to_memory_if_relevant(
+                session,
+                episode,
+                topic_family=topic_family,
+                emotion_payload=emotion_payload,
+                learning_paused=bool(consent.get('learning_paused')),
+            )
+            if memory is not None and 'auto_memory' not in (episode.tags or []):
+                episode.tags = list(episode.tags or []) + ['auto_memory']
+                session.add(episode)
+                session.commit()
+                session.refresh(episode)
+            self.last_turn_metadata = {
+                'episode_id': str(episode.id),
+                'memory_id': str(memory.id) if memory is not None else None,
+                'topic': topic_family,
+                'user_id': str(user.id),
+            }
+        except Exception as exc:
+            logger.debug('Failed to persist generated turn: %s', exc, exc_info=True)
+            self.last_turn_metadata = {}
+        finally:
+            session.close()
     def _call_language_model(self, messages: List[Dict[str, str]]) -> str:
         if self.openai_client is None:
             raise RuntimeError('OpenAI client is not configured')
@@ -699,15 +771,42 @@ class VtuberAI:
         messages.append({'role': 'user', 'content': user_message})
         if self.openai_client is None:
             logger.warning('VtuberAI: OpenAI client is unavailable; using fallback response.')
-            return self._fallback_response(text, emotion, emotion_data, plan.topic_family)
+            response_text = self._fallback_response(text, emotion, emotion_data, plan.topic_family)
+            self._persist_generated_turn(
+                user_text=text,
+                response_text=response_text,
+                emotion=emotion,
+                emotion_payload=emotion_data,
+                runtime_context=runtime_context,
+                topic_family=plan.topic_family,
+            )
+            return response_text
         try:
             response_text = self._call_language_model(messages)
         except Exception as exc:
             logger.error('LLM response generation failed: %s', exc)
-            return self._fallback_response(text, emotion, emotion_data, plan.topic_family)
+            response_text = self._fallback_response(text, emotion, emotion_data, plan.topic_family)
+            self._persist_generated_turn(
+                user_text=text,
+                response_text=response_text,
+                emotion=emotion,
+                emotion_payload=emotion_data,
+                runtime_context=runtime_context,
+                topic_family=plan.topic_family,
+            )
+            return response_text
         if not response_text:
             logger.warning('Received empty response from language model; using fallback.')
-            return self._fallback_response(text, emotion, emotion_data, plan.topic_family)
+            response_text = self._fallback_response(text, emotion, emotion_data, plan.topic_family)
+            self._persist_generated_turn(
+                user_text=text,
+                response_text=response_text,
+                emotion=emotion,
+                emotion_payload=emotion_data,
+                runtime_context=runtime_context,
+                topic_family=plan.topic_family,
+            )
+            return response_text
         try:
             self.bandit.record_topic_selection(plan.topic_family)
             self.bandit.add_to_history(text, response_text, plan.topic_family)
@@ -720,6 +819,14 @@ class VtuberAI:
         except Exception as exc:
             logger.debug('Failed to update model expression: %s', exc)
         self._append_conversation_entry(text, response_text, emotion_data)
+        self._persist_generated_turn(
+            user_text=text,
+            response_text=response_text,
+            emotion=emotion,
+            emotion_payload=emotion_data,
+            runtime_context=runtime_context,
+            topic_family=plan.topic_family,
+        )
         return response_text
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
