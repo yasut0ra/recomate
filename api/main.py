@@ -59,6 +59,7 @@ from .db.session import get_session
 from .emotion_analyzer import EmotionAnalyzer
 from .routers.features import router as features_router
 from .schemas import AudioInput, TextInput, TranscriptionResponse
+from .services.chat_payloads import build_chat_history_entry, build_chat_response_payload
 from .services.consent import get_consent_setting
 from .services.conversation_planner import ConversationPlan, ConversationPlanner
 from .services.episodes import build_episode_tags, build_recent_episode_context, record_episode
@@ -144,17 +145,18 @@ async def chat(input_data: TextInput):
     
     try:
         vtuber.update_api_key(input_data.api_key)
-        emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data.text)
-        emotion = vtuber._emotion_label_from_payload(emotion_data)
+        user_emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data.text)
+        emotion = vtuber._emotion_label_from_payload(user_emotion_data)
         runtime_context = vtuber._build_runtime_context(input_data.user_id, current_text=input_data.text)
-        response = vtuber._generate_response(input_data.text, emotion, emotion_data, runtime_context)
-        
-        return {
-            "response": response,
-            "emotion": emotion,
-            "conversation_history": vtuber.get_serialised_history(),
-            "turn_metadata": vtuber.last_turn_metadata,
-        }
+        response = vtuber._generate_response(input_data.text, emotion, user_emotion_data, runtime_context)
+
+        return build_chat_response_payload(
+            response=response,
+            user_emotion=vtuber.last_user_emotion,
+            assistant_emotion=vtuber.last_assistant_emotion,
+            conversation_history=vtuber.get_serialised_history(),
+            turn_metadata=vtuber.last_turn_metadata,
+        )
     except Exception as e:
         print(f"Error in chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -225,8 +227,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 api_key = input_data.get('apiKey') or input_data.get('api_key')
                 vtuber.update_api_key(api_key)
             try:
-                emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data["text"])
-                emotion = vtuber._emotion_label_from_payload(emotion_data)
+                user_emotion_data = vtuber.emotion_analyzer.analyze_emotion(input_data["text"])
+                emotion = vtuber._emotion_label_from_payload(user_emotion_data)
                 raw_user_id = input_data.get("userId") or input_data.get("user_id")
                 parsed_user_id = None
                 if isinstance(raw_user_id, str) and raw_user_id.strip():
@@ -235,14 +237,17 @@ async def websocket_endpoint(websocket: WebSocket):
                     except ValueError:
                         parsed_user_id = None
                 runtime_context = vtuber._build_runtime_context(parsed_user_id, current_text=input_data["text"])
-                response = vtuber._generate_response(input_data["text"], emotion, emotion_data, runtime_context)
+                response = vtuber._generate_response(input_data["text"], emotion, user_emotion_data, runtime_context)
 
-                await websocket.send_json({
-                    "response": response,
-                    "emotion": emotion,
-                    "conversation_history": vtuber.get_serialised_history(),
-                    "turn_metadata": vtuber.last_turn_metadata,
-                })
+                await websocket.send_json(
+                    build_chat_response_payload(
+                        response=response,
+                        user_emotion=vtuber.last_user_emotion,
+                        assistant_emotion=vtuber.last_assistant_emotion,
+                        conversation_history=vtuber.get_serialised_history(),
+                        turn_metadata=vtuber.last_turn_metadata,
+                    )
+                )
             except Exception as e:
                 print(f"Error in websocket chat: {str(e)}")
                 await websocket.send_json({
@@ -287,6 +292,8 @@ class VtuberAI:
 
         self.conversation_history = []
         self.last_turn_metadata: Dict[str, Any] = {}
+        self.last_user_emotion: Optional[Dict[str, Any]] = None
+        self.last_assistant_emotion: Optional[Dict[str, Any]] = None
         
 
         self.emotion_analyzer = EmotionAnalyzer(client=self.openai_client)
@@ -357,14 +364,21 @@ class VtuberAI:
         else:
             self.emotion_analyzer.set_client(None)
             self.bandit.set_client(None)
-    def _append_conversation_entry(self, user_input, response, emotion_data=None):
+    def _append_conversation_entry(
+        self,
+        user_input: str,
+        response: str,
+        user_emotion_data: Optional[Dict[str, Any]] = None,
+        assistant_emotion_data: Optional[Dict[str, Any]] = None,
+    ):
         try:
-            entry = {
-                'user_input': user_input,
-                'response': response,
-                'emotion': emotion_data,
-                'timestamp': time.time(),
-            }
+            entry = build_chat_history_entry(
+                user_input=user_input,
+                response=response,
+                user_emotion=user_emotion_data,
+                assistant_emotion=assistant_emotion_data,
+                timestamp=time.time(),
+            )
         except Exception:
             entry = {'user_input': user_input, 'response': response}
         self.conversation_history.append(entry)
@@ -376,12 +390,15 @@ class VtuberAI:
         for item in self.conversation_history[-50:]:
             if isinstance(item, dict):
                 if 'user_input' in item and 'response' in item:
-                    history.append({
-                        'user_input': item.get('user_input'),
-                        'response': item.get('response'),
-                        'emotion': item.get('emotion'),
-                        'timestamp': item.get('timestamp'),
-                    })
+                    history.append(build_chat_history_entry(
+                        user_input=str(item.get('user_input') or ''),
+                        response=str(item.get('response') or ''),
+                        user_emotion=item.get('user_emotion') if isinstance(item.get('user_emotion'), dict) else None,
+                        assistant_emotion=item.get('assistant_emotion') if isinstance(item.get('assistant_emotion'), dict) else (
+                            item.get('emotion') if isinstance(item.get('emotion'), dict) else None
+                        ),
+                        timestamp=item.get('timestamp') if isinstance(item.get('timestamp'), (int, float)) else None,
+                    ))
                 elif item.get('role') and item.get('content'):
                     history.append({
                         'role': item.get('role'),
@@ -590,21 +607,50 @@ class VtuberAI:
         ]
         candidate_pool = patterns or default_patterns
         response_text = random.choice(candidate_pool) if candidate_pool else default_patterns[0]
-        self._append_conversation_entry(user_input, response_text, emotion_data)
-        if topic:
-            try:
-                self.bandit.record_topic_selection(topic)
-                self.bandit.add_to_history(user_input, response_text, topic)
-            except Exception as exc:
-                logger.debug('Failed to record fallback response in bandit history: %s', exc)
-        if emotion_data is not None:
-            try:
-                expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
-                if hasattr(self, 'model') and getattr(self, 'model') is not None:
-                    self.model.update_expression(expression)  # type: ignore[attr-defined]
-            except Exception as exc:
-                logger.debug('Failed to update model expression during fallback: %s', exc)
         return response_text
+
+    def _finalise_generated_response(
+        self,
+        *,
+        user_text: str,
+        response_text: str,
+        user_emotion: str,
+        user_emotion_data: Optional[Dict[str, Any]],
+        runtime_context: Optional[Dict[str, Any]],
+        topic_family: Optional[str],
+    ) -> None:
+        assistant_emotion_data = self.emotion_analyzer.analyze_emotion(response_text)
+        self.last_user_emotion = user_emotion_data
+        self.last_assistant_emotion = assistant_emotion_data
+
+        if topic_family:
+            try:
+                self.bandit.record_topic_selection(topic_family)
+                self.bandit.add_to_history(user_text, response_text, topic_family)
+            except Exception as exc:
+                logger.debug('Failed to record response in bandit history: %s', exc)
+
+        try:
+            emotion_expression = self.emotion_analyzer.get_emotion_expression(assistant_emotion_data)
+            if hasattr(self, 'model') and getattr(self, 'model') is not None:
+                self.model.update_expression(emotion_expression)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.debug('Failed to update model expression: %s', exc)
+
+        self._append_conversation_entry(
+            user_text,
+            response_text,
+            user_emotion_data=user_emotion_data,
+            assistant_emotion_data=assistant_emotion_data,
+        )
+        self._persist_generated_turn(
+            user_text=user_text,
+            response_text=response_text,
+            emotion=user_emotion,
+            emotion_payload=user_emotion_data,
+            runtime_context=runtime_context,
+            topic_family=topic_family,
+        )
 
 
 
@@ -776,6 +822,8 @@ class VtuberAI:
         runtime_context: Optional[Dict[str, Any]] = None,
     ):
         """Generate a conversational response using the configured language model."""
+        self.last_user_emotion = None
+        self.last_assistant_emotion = None
         if emotion_data is None:
             emotion_data = self.emotion_analyzer.analyze_emotion(text)
         if runtime_context is None:
@@ -801,11 +849,11 @@ class VtuberAI:
         if self.openai_client is None:
             logger.warning('VtuberAI: OpenAI client is unavailable; using fallback response.')
             response_text = self._fallback_response(text, emotion, emotion_data, plan.topic_family)
-            self._persist_generated_turn(
+            self._finalise_generated_response(
                 user_text=text,
                 response_text=response_text,
-                emotion=emotion,
-                emotion_payload=emotion_data,
+                user_emotion=emotion,
+                user_emotion_data=emotion_data,
                 runtime_context=runtime_context,
                 topic_family=plan.topic_family,
             )
@@ -815,11 +863,11 @@ class VtuberAI:
         except Exception as exc:
             logger.error('LLM response generation failed: %s', exc)
             response_text = self._fallback_response(text, emotion, emotion_data, plan.topic_family)
-            self._persist_generated_turn(
+            self._finalise_generated_response(
                 user_text=text,
                 response_text=response_text,
-                emotion=emotion,
-                emotion_payload=emotion_data,
+                user_emotion=emotion,
+                user_emotion_data=emotion_data,
                 runtime_context=runtime_context,
                 topic_family=plan.topic_family,
             )
@@ -827,32 +875,20 @@ class VtuberAI:
         if not response_text:
             logger.warning('Received empty response from language model; using fallback.')
             response_text = self._fallback_response(text, emotion, emotion_data, plan.topic_family)
-            self._persist_generated_turn(
+            self._finalise_generated_response(
                 user_text=text,
                 response_text=response_text,
-                emotion=emotion,
-                emotion_payload=emotion_data,
+                user_emotion=emotion,
+                user_emotion_data=emotion_data,
                 runtime_context=runtime_context,
                 topic_family=plan.topic_family,
             )
             return response_text
-        try:
-            self.bandit.record_topic_selection(plan.topic_family)
-            self.bandit.add_to_history(text, response_text, plan.topic_family)
-        except Exception as exc:
-            logger.debug('Failed to append to bandit history: %s', exc)
-        try:
-            emotion_expression = self.emotion_analyzer.get_emotion_expression(emotion_data)
-            if hasattr(self, 'model') and getattr(self, 'model') is not None:
-                self.model.update_expression(emotion_expression)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.debug('Failed to update model expression: %s', exc)
-        self._append_conversation_entry(text, response_text, emotion_data)
-        self._persist_generated_turn(
+        self._finalise_generated_response(
             user_text=text,
             response_text=response_text,
-            emotion=emotion,
-            emotion_payload=emotion_data,
+            user_emotion=emotion,
+            user_emotion_data=emotion_data,
             runtime_context=runtime_context,
             topic_family=plan.topic_family,
         )

@@ -37,8 +37,8 @@ const emotionMap: Record<string, CharacterEmotion> = {
   sad: 'sad',
   sorrow: 'sad',
   unhappy: 'sad',
-  angry: 'surprised',
-  upset: 'surprised',
+  angry: 'angry',
+  upset: 'angry',
   surprised: 'surprised',
   thinking: 'thinking',
   neutral: 'neutral',
@@ -51,7 +51,9 @@ const getRandomId = () => {
   return 'msg-' + Math.random().toString(16).slice(2);
 };
 
-const normaliseEmotion = (emotion: ChatApiResponse['emotion']): CharacterEmotion => {
+const normaliseEmotion = (
+  emotion: ChatApiResponse['assistant_emotion'] | ChatApiResponse['emotion'],
+): CharacterEmotion => {
   if (!emotion) {
     return 'thinking';
   }
@@ -123,7 +125,10 @@ const normaliseHistory = (
 
     if (entry && typeof entry === 'object') {
       const entryObject = entry as Extract<ConversationHistoryEntry, Record<string, unknown>>;
-      const emotion = 'emotion' in entryObject ? normaliseEmotion(entryObject.emotion as ChatApiResponse['emotion']) : undefined;
+      const rawAssistantEmotion = 'assistant_emotion' in entryObject
+        ? entryObject.assistant_emotion as ChatApiResponse['assistant_emotion']
+        : entryObject.emotion as ChatApiResponse['emotion'] | undefined;
+      const emotion = rawAssistantEmotion ? normaliseEmotion(rawAssistantEmotion) : undefined;
 
       if (typeof entryObject.user_input === 'string') {
         result.push({
@@ -365,7 +370,8 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     try {
       const apiResponse = await postChatMessage(trimmed, { apiKey });
-      const assistantEmotion = normaliseEmotion(apiResponse.emotion);
+      const rawAssistantEmotion = apiResponse.assistant_emotion ?? apiResponse.emotion;
+      const assistantEmotion = normaliseEmotion(rawAssistantEmotion);
       const assistantMessage: ChatMessage = {
         id: getRandomId(),
         sender: 'assistant',

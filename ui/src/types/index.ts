@@ -1,8 +1,17 @@
-export type CharacterEmotion = 'happy' | 'thinking' | 'surprised' | 'sad' | 'neutral';
+export type CharacterEmotion = 'happy' | 'thinking' | 'surprised' | 'sad' | 'neutral' | 'angry';
 
 export type CharacterModel = 'rico' | 'hachika';
 
 export type MessageSender = 'user' | 'assistant';
+
+export interface EmotionPayload {
+  primary_emotions?: string[];
+  intensity?: number;
+  emotion_combination?: string;
+  emotion_change?: string;
+  reason?: string;
+  confidence?: number;
+}
 
 export interface ChatMessage {
   id: string;
@@ -20,13 +29,17 @@ export type ConversationHistoryEntry =
       text?: string;
       role?: MessageSender;
       content?: string;
-      emotion?: string | { primary_emotions?: string[] };
+      user_emotion?: string | EmotionPayload;
+      assistant_emotion?: string | EmotionPayload;
+      emotion?: string | EmotionPayload;
       timestamp?: number | string;
     };
 
 export interface ChatApiResponse {
   response: string;
-  emotion?: string | { primary_emotions?: string[] };
+  user_emotion?: string | EmotionPayload;
+  assistant_emotion?: string | EmotionPayload;
+  emotion?: string | EmotionPayload;
   conversation_history?: ConversationHistoryEntry[];
   turn_metadata?: {
     episode_id?: string | null;
