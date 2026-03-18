@@ -10,7 +10,7 @@ def test_planner_picks_work_topic_from_japanese_keywords() -> None:
     )
 
     assert plan.topic_family == "仕事・学び"
-    assert "安心感" in plan.response_intent or "受け止める" in plan.response_intent
+    assert "安心" in plan.response_intent or "受け止め" in plan.response_intent
 
 
 def test_planner_keeps_previous_topic_when_user_signals_continuity() -> None:
@@ -55,8 +55,8 @@ def test_planner_uses_supportive_intent_for_negative_advice_request() -> None:
     )
 
     assert plan.topic_family == "悩み・気持ち整理"
-    assert plan.response_intent == "共感しつつ整理する"
-    assert "確認" in plan.follow_up_style
+    assert "整理" in plan.response_intent
+    assert "小さな選択肢" in plan.follow_up_style
 
 
 def test_planner_softens_reply_during_quiet_hours() -> None:
@@ -76,7 +76,7 @@ def test_planner_softens_reply_during_quiet_hours() -> None:
     )
 
     assert plan.quiet_hours is True
-    assert plan.follow_up_style == "質問は控えめに、必要なら1つまで"
+    assert plan.follow_up_style == "質問で締めず、静かに余白を残す"
     assert "夜間モード" in plan.mood_hint
 
 
@@ -98,3 +98,34 @@ def test_planner_respects_sensitive_private_topics() -> None:
     assert plan.boundary_mode == "sensitive"
     assert "個人特定情報" not in plan.response_intent
     assert any("深追い" in pattern or "敏感" in pattern for pattern in plan.avoid_patterns)
+
+
+def test_planner_prefers_non_interrogative_style_for_negative_disclosure() -> None:
+    planner = ConversationPlanner()
+
+    plan = planner.plan(
+        "今日はなんだかずっとしんどくて、何もしたくない。",
+        {"primary_emotions": ["sad"], "intensity": 0.82},
+        consent_profile={
+            "night_mode": False,
+            "push_intensity": "soft",
+            "private_topics": [],
+            "learning_paused": False,
+        },
+        local_hour=16,
+    )
+
+    assert "受け止め" in plan.follow_up_style
+    assert any("診察" in pattern for pattern in plan.avoid_patterns)
+
+
+def test_planner_only_allows_light_question_when_user_asked_one() -> None:
+    planner = ConversationPlanner()
+
+    plan = planner.plan(
+        "最近転職を考えてるんだけど、どう思う？",
+        {"primary_emotions": ["neutral"], "intensity": 0.45},
+    )
+
+    assert plan.response_intent == "答えつつ自然につなぐ"
+    assert "軽い問いを1つだけ" in plan.follow_up_style

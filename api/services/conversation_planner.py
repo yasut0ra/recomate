@@ -257,6 +257,8 @@ class ConversationPlanner:
         emotion_label = self._extract_primary_emotion(emotion_payload)
         intensity = self._extract_intensity(emotion_payload)
         push_intensity = self._extract_push_intensity(consent_profile)
+        asks_advice = any(marker in text for marker in ADVICE_MARKERS)
+        asks_question = any(marker in text for marker in QUESTION_MARKERS)
         quiet_hours = bool(consent_profile and consent_profile.get("night_mode")) and local_hour is not None and (
             local_hour >= 22 or local_hour < 7
         )
@@ -291,8 +293,24 @@ class ConversationPlanner:
         selected_topic = self._pick_topic(scores, matches_by_topic, recent_topics, continuity_marker)
         selected_matches = matches_by_topic.get(selected_topic, [])
         continuity = self._resolve_continuity(selected_topic, last_topic, continuity_marker)
-        response_intent = self._resolve_intent(text, emotion_label, continuity, push_intensity, quiet_hours)
-        follow_up_style = self._resolve_follow_up_style(text, emotion_label, intensity, push_intensity, quiet_hours, sensitive_mode)
+        response_intent = self._resolve_intent(
+            emotion_label,
+            continuity,
+            push_intensity,
+            quiet_hours,
+            asks_advice,
+            asks_question,
+        )
+        follow_up_style = self._resolve_follow_up_style(
+            emotion_label,
+            intensity,
+            continuity,
+            push_intensity,
+            quiet_hours,
+            sensitive_mode,
+            asks_advice,
+            asks_question,
+        )
         mood_hint = self._resolve_mood_hint(emotion_label, continuity, mood_state, quiet_hours)
         focus_points = self._build_focus_points(selected_topic, selected_matches)
         avoid_patterns = self._build_avoid_patterns(
@@ -426,51 +444,57 @@ class ConversationPlanner:
 
     def _resolve_intent(
         self,
-        text: str,
         emotion_label: str,
         continuity: str,
         push_intensity: str,
         quiet_hours: bool,
+        asks_advice: bool,
+        asks_question: bool,
     ) -> str:
-        asks_advice = any(marker in text for marker in ADVICE_MARKERS)
-        asks_question = any(marker in text for marker in QUESTION_MARKERS)
-
         if quiet_hours and emotion_label in NEGATIVE_EMOTIONS:
-            return "静かに安心感を優先して受け止める"
+            return "静かにそばで受け止める"
         if emotion_label in NEGATIVE_EMOTIONS and asks_advice:
-            return "やわらかく共感しつつ整理する" if push_intensity == "soft" else "共感しつつ整理する"
+            return "まず共感してから小さく整理を手伝う" if push_intensity == "soft" else "共感してから小さく整理を手伝う"
         if emotion_label in NEGATIVE_EMOTIONS:
-            return "安心感を優先して受け止める"
+            return "まず受け止めて安心できる返事をする"
         if emotion_label in POSITIVE_EMOTIONS:
-            return "一緒に喜びを広げる"
+            return "一緒によろこびの温度を上げる"
         if asks_advice:
             if push_intensity == "soft":
-                return "押しつけず選択肢をそっと示す"
-            return "やさしく提案する"
+                return "押しつけず選択肢をそっと置く"
+            return "必要なら小さく提案する"
         if continuity == "継続":
-            return "前の流れを保って深める"
+            return "前の流れのまま並んで話す"
         if asks_question:
-            return "答えつつ自然に広げる"
-        return "気軽に広げる"
+            return "答えつつ自然につなぐ"
+        return "雑談として気楽に受け止める"
 
     def _resolve_follow_up_style(
         self,
-        text: str,
         emotion_label: str,
         intensity: float,
+        continuity: str,
         push_intensity: str,
         quiet_hours: bool,
         sensitive_mode: bool,
+        asks_advice: bool,
+        asks_question: bool,
     ) -> str:
         if sensitive_mode:
             return "追加質問はせず、境界を尊重する"
-        if quiet_hours or push_intensity == "soft":
-            return "質問は控えめに、必要なら1つまで"
-        if emotion_label in NEGATIVE_EMOTIONS and intensity >= 0.65:
-            return "確認のための短い質問を1つまで"
-        if any(marker in text for marker in ADVICE_MARKERS):
-            return "提案が必要なときだけ補足質問をする"
-        return "自然ならやわらかい質問を1つだけ"
+        if quiet_hours:
+            return "質問で締めず、静かに余白を残す"
+        if emotion_label in NEGATIVE_EMOTIONS and intensity >= 0.65 and not asks_advice and not asks_question:
+            return "質問せず受け止めを優先する"
+        if push_intensity == "soft" and not asks_advice and not asks_question:
+            return "基本は質問せず、ひとこと添えて余白を残す"
+        if asks_advice:
+            return "最初は質問せず、小さな選択肢を1つ置く"
+        if asks_question:
+            return "答えたあと、必要なら軽い問いを1つだけ添える"
+        if continuity in {"継続", "深掘り"}:
+            return "質問より相づちと所感でつなぐ"
+        return "質問で広げず、ひとこと添えて会話を続ける"
 
     def _resolve_mood_hint(
         self,
@@ -515,7 +539,13 @@ class ConversationPlanner:
         avoid_patterns: List[str] = []
         if sensitive_mode:
             avoid_patterns.append("個人特定情報や敏感話題を深追いしない")
-        avoid_patterns.extend(["二文を超えて長引かせない", "質問を詰め込みすぎない"])
+        avoid_patterns.extend(
+            [
+                "二文を超えて長引かせない",
+                "質問を詰め込みすぎない",
+                "診察や面談のような聞き取り方をしない",
+            ]
+        )
         if emotion_label in NEGATIVE_EMOTIONS:
             avoid_patterns.append("強い断定や押しつけを避ける")
         if push_intensity == "soft":
