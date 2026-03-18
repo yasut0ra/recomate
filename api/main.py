@@ -68,6 +68,7 @@ from .services.memory import promote_episode_to_memory_if_relevant
 from .services.mood import get_recent_moods
 from .services.preferences import get_preference_profile
 from .services.rewarding import calculate_response_reward
+from .services.text_cleanup import clean_assistant_response
 from .services.users import resolve_local_user
 from .topic_bandit import TopicBandit
 
@@ -580,7 +581,7 @@ class VtuberAI:
                 )
                 output_text = getattr(response, 'output_text', None)
                 if output_text:
-                    return output_text.strip()
+                    return clean_assistant_response(output_text)
                 choices = getattr(response, 'choices', None)
                 if choices:
                     message = getattr(choices[0], 'message', None)
@@ -588,7 +589,7 @@ class VtuberAI:
                     if isinstance(content, list):
                         joined = ''.join(part.get('text', '') for part in content if isinstance(part, dict))
                         if joined.strip():
-                            return joined.strip()
+                            return clean_assistant_response(joined)
             except Exception as exc:
                 logger.debug('Responses API call failed, falling back to chat completions: %s', exc)
         chat_model = self.chat_fallback_model or self.chat_model or 'gpt-4o-mini'
@@ -597,7 +598,7 @@ class VtuberAI:
             messages=messages,
         )
         content = completion.choices[0].message.content or ''
-        return content.strip()
+        return clean_assistant_response(content)
     def _fallback_response(self, user_input: str, emotion: str, emotion_data: Optional[Dict] = None, topic: Optional[str] = None) -> str:
         """Provide a graceful canned response when the LLM is unavailable."""
         patterns: List[str] = []
@@ -614,7 +615,7 @@ class VtuberAI:
         ]
         candidate_pool = patterns or default_patterns
         response_text = random.choice(candidate_pool) if candidate_pool else default_patterns[0]
-        return response_text
+        return clean_assistant_response(response_text)
 
     def _finalise_generated_response(
         self,
