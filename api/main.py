@@ -67,6 +67,7 @@ from .services.memory import build_memory_context
 from .services.memory import promote_episode_to_memory_if_relevant
 from .services.mood import get_recent_moods
 from .services.preferences import get_preference_profile
+from .services.rewarding import calculate_response_reward
 from .services.users import resolve_local_user
 from .topic_bandit import TopicBandit
 
@@ -154,6 +155,7 @@ async def chat(input_data: TextInput):
             response=response,
             user_emotion=vtuber.last_user_emotion,
             assistant_emotion=vtuber.last_assistant_emotion,
+            reward=vtuber.last_reward,
             conversation_history=vtuber.get_serialised_history(),
             turn_metadata=vtuber.last_turn_metadata,
         )
@@ -244,6 +246,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         response=response,
                         user_emotion=vtuber.last_user_emotion,
                         assistant_emotion=vtuber.last_assistant_emotion,
+                        reward=vtuber.last_reward,
                         conversation_history=vtuber.get_serialised_history(),
                         turn_metadata=vtuber.last_turn_metadata,
                     )
@@ -294,6 +297,7 @@ class VtuberAI:
         self.last_turn_metadata: Dict[str, Any] = {}
         self.last_user_emotion: Optional[Dict[str, Any]] = None
         self.last_assistant_emotion: Optional[Dict[str, Any]] = None
+        self.last_reward: Optional[float] = None
         
 
         self.emotion_analyzer = EmotionAnalyzer(client=self.openai_client)
@@ -370,6 +374,7 @@ class VtuberAI:
         response: str,
         user_emotion_data: Optional[Dict[str, Any]] = None,
         assistant_emotion_data: Optional[Dict[str, Any]] = None,
+        reward: Optional[float] = None,
     ):
         try:
             entry = build_chat_history_entry(
@@ -377,6 +382,7 @@ class VtuberAI:
                 response=response,
                 user_emotion=user_emotion_data,
                 assistant_emotion=assistant_emotion_data,
+                reward=reward,
                 timestamp=time.time(),
             )
         except Exception:
@@ -397,6 +403,7 @@ class VtuberAI:
                         assistant_emotion=item.get('assistant_emotion') if isinstance(item.get('assistant_emotion'), dict) else (
                             item.get('emotion') if isinstance(item.get('emotion'), dict) else None
                         ),
+                        reward=float(item.get('reward')) if isinstance(item.get('reward'), (int, float)) else None,
                         timestamp=item.get('timestamp') if isinstance(item.get('timestamp'), (int, float)) else None,
                     ))
                 elif item.get('role') and item.get('content'):
@@ -620,13 +627,30 @@ class VtuberAI:
         topic_family: Optional[str],
     ) -> None:
         assistant_emotion_data = self.emotion_analyzer.analyze_emotion(response_text)
+        reward = calculate_response_reward(
+            user_text=user_text,
+            response_text=response_text,
+            user_emotion=user_emotion_data,
+            assistant_emotion=assistant_emotion_data,
+        )
         self.last_user_emotion = user_emotion_data
         self.last_assistant_emotion = assistant_emotion_data
+        self.last_reward = reward
 
         if topic_family:
             try:
-                self.bandit.record_topic_selection(topic_family)
-                self.bandit.add_to_history(user_text, response_text, topic_family)
+                topic_idx = self.bandit.record_topic_selection(topic_family)
+                self.bandit.add_to_history(user_text, response_text, topic_family, reward=reward)
+                if topic_idx is not None:
+                    self.bandit.update(
+                        topic_idx,
+                        reward,
+                        features={
+                            'user_input': user_text,
+                            'context_text': response_text,
+                            'emotion': user_emotion_data or {},
+                        },
+                    )
             except Exception as exc:
                 logger.debug('Failed to record response in bandit history: %s', exc)
 
@@ -642,6 +666,7 @@ class VtuberAI:
             response_text,
             user_emotion_data=user_emotion_data,
             assistant_emotion_data=assistant_emotion_data,
+            reward=reward,
         )
         self._persist_generated_turn(
             user_text=user_text,
@@ -824,6 +849,7 @@ class VtuberAI:
         """Generate a conversational response using the configured language model."""
         self.last_user_emotion = None
         self.last_assistant_emotion = None
+        self.last_reward = None
         if emotion_data is None:
             emotion_data = self.emotion_analyzer.analyze_emotion(text)
         if runtime_context is None:

@@ -129,6 +129,7 @@ const normaliseHistory = (
         ? entryObject.assistant_emotion as ChatApiResponse['assistant_emotion']
         : entryObject.emotion as ChatApiResponse['emotion'] | undefined;
       const emotion = rawAssistantEmotion ? normaliseEmotion(rawAssistantEmotion) : undefined;
+      const reward = typeof entryObject.reward === 'number' ? entryObject.reward : undefined;
 
       if (typeof entryObject.user_input === 'string') {
         result.push({
@@ -145,6 +146,7 @@ const normaliseHistory = (
           text: entryObject.response,
           timestamp,
           emotion,
+          reward,
         });
       }
       if (!entryObject.user_input && entryObject.role && entryObject.content) {
@@ -155,6 +157,7 @@ const normaliseHistory = (
           text: String(entryObject.content),
           timestamp,
           emotion: sender === 'assistant' ? emotion : undefined,
+          reward: sender === 'assistant' ? reward : undefined,
         });
       }
     }
@@ -378,6 +381,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         text: apiResponse.response,
         timestamp: new Date().toISOString(),
         emotion: assistantEmotion,
+        reward: typeof apiResponse.reward === 'number' ? apiResponse.reward : undefined,
       };
 
       const historyMessages = normaliseHistory(apiResponse.conversation_history);

@@ -19,6 +19,7 @@ export interface ChatMessage {
   text: string;
   timestamp: string;
   emotion?: CharacterEmotion;
+  reward?: number;
 }
 
 export type ConversationHistoryEntry =
@@ -32,6 +33,7 @@ export type ConversationHistoryEntry =
       user_emotion?: string | EmotionPayload;
       assistant_emotion?: string | EmotionPayload;
       emotion?: string | EmotionPayload;
+      reward?: number;
       timestamp?: number | string;
     };
 
@@ -40,6 +42,7 @@ export interface ChatApiResponse {
   user_emotion?: string | EmotionPayload;
   assistant_emotion?: string | EmotionPayload;
   emotion?: string | EmotionPayload;
+  reward?: number;
   conversation_history?: ConversationHistoryEntry[];
   turn_metadata?: {
     episode_id?: string | null;

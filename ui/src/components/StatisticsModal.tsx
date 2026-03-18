@@ -18,19 +18,6 @@ interface StatisticsModalProps {
   onClose: () => void;
 }
 
-const emotionScore = (emotion?: string) => {
-  if (!emotion) {
-    return 0.5;
-  }
-  if (emotion === 'happy' || emotion === 'surprised') {
-    return 0.9;
-  }
-  if (emotion === 'sad') {
-    return 0.2;
-  }
-  return 0.6;
-};
-
 const StatisticsModal: React.FC<StatisticsModalProps> = ({ onClose }) => {
   const { messages, topicStats, isTopicStatsLoading, refreshTopicStats } = useChatContext();
 
@@ -43,9 +30,14 @@ const StatisticsModal: React.FC<StatisticsModalProps> = ({ onClose }) => {
     [messages],
   );
 
-  const rewardTrend = assistantMessages.map((message, index) => ({
+  const rewardMessages = useMemo(
+    () => assistantMessages.filter(message => typeof message.reward === 'number'),
+    [assistantMessages],
+  );
+
+  const rewardTrend = rewardMessages.map((message, index) => ({
     name: '応答 ' + (index + 1),
-    reward: Number(emotionScore(message.emotion).toFixed(2)),
+    reward: Number((message.reward ?? 0).toFixed(2)),
   }));
 
   const emotionCounts = assistantMessages.reduce<Record<string, number>>((accumulator, message) => {
@@ -59,10 +51,10 @@ const StatisticsModal: React.FC<StatisticsModalProps> = ({ onClose }) => {
     count: emotionCounts[key],
   }));
 
-  const averageScore = assistantMessages.length === 0
+  const averageScore = rewardMessages.length === 0
     ? 0
-    : assistantMessages.reduce((accumulator, message) => accumulator + emotionScore(message.emotion), 0) /
-      assistantMessages.length;
+    : rewardMessages.reduce((accumulator, message) => accumulator + (message.reward ?? 0), 0) /
+      rewardMessages.length;
 
   const lastEmotion = assistantMessages.length === 0
     ? '---'
@@ -97,7 +89,7 @@ const StatisticsModal: React.FC<StatisticsModalProps> = ({ onClose }) => {
 
         <div className="space-y-8">
           <div className="bg-purple-50 p-4 rounded-lg">
-            <h3 className="text-lg font-semibold text-purple-700 mb-4">感情スコアの推移</h3>
+            <h3 className="text-lg font-semibold text-purple-700 mb-4">Reward の推移</h3>
             <div className="w-full h-[300px]">
               {rewardTrend.length === 0 ? (
                 <div className="flex h-full items-center justify-center text-purple-300">
@@ -146,7 +138,7 @@ const StatisticsModal: React.FC<StatisticsModalProps> = ({ onClose }) => {
               <p className="text-2xl font-bold text-purple-900">{assistantMessages.length}</p>
             </div>
             <div className="bg-pink-50 p-4 rounded-lg">
-              <h4 className="text-sm font-medium text-pink-700">平均感情スコア</h4>
+              <h4 className="text-sm font-medium text-pink-700">平均 Reward</h4>
               <p className="text-2xl font-bold text-pink-900">{averageScore.toFixed(2)}</p>
             </div>
             <div className="bg-purple-50 p-4 rounded-lg">

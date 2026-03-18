@@ -121,6 +121,7 @@ class TopicBandit:
         self.last_selected_times[best_idx] = current_time
         self.total_selections += 1
         self.topic_frequency[best_idx] += 1
+        self.counts[best_idx] += 1
         self._record_recent_topic(best_idx)
         return best_idx, self.topics[best_idx]
     
@@ -376,7 +377,6 @@ class TopicBandit:
             self.b_vectors[topic_idx] = np.zeros(self.feature_dim)
             return
 
-        self.counts[topic_idx] += 1
         self.values[topic_idx] += 0.1 * (reward - self.values[topic_idx])
     
     def get_topic_stats(self) -> Dict:
@@ -399,14 +399,17 @@ class TopicBandit:
             'featureDim': self.feature_dim,
         }
     
-    def add_to_history(self, user_input: str, response: str, topic: str):
+    def add_to_history(self, user_input: str, response: str, topic: str, reward: Optional[float] = None):
         """会話履歴に追加"""
-        self.conversation_history.append({
+        entry: Dict[str, Any] = {
             'user_input': user_input,
             'response': response,
             'topic': topic,
             'timestamp': time.time()
-        })
+        }
+        if reward is not None:
+            entry['reward'] = reward
+        self.conversation_history.append(entry)
 
     def record_topic_selection(self, topic: str) -> Optional[int]:
         """Record a topic choice when selection is handled outside LinUCB."""
@@ -428,7 +431,7 @@ class TopicBandit:
         for i, topic in enumerate(self.topics):
             stats[topic] = {
                 'count': self.counts[i],
-                'avg_reward': self.values[i] / max(1, self.counts[i]),
+                'avg_reward': self.values[i],
                 'expected_reward': self.values[i]
             }
         return stats 
