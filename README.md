@@ -7,13 +7,6 @@
 - `2026-03-18` 時点の現役構成と整理メモは `docs/codebase_overview.md` にまとめています。
 
 
-## URL（完成版とは異なります）
-
-### ホームページ
-https://recomate-landing.netlify.app/
-
-### デモ
-https://spontaneous-cascaron-d7c26e.netlify.app/
 
 ## 開発環境の起動方法
 
