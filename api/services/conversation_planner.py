@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import unicodedata
-from typing import Any, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+TopicSelector = Callable[[List[Tuple[str, float]]], Optional[str]]
+
+# Candidates within this score margin of the heuristic best are offered to the
+# bandit; a tight margin keeps clearly-off-topic families out of the shortlist.
+CANDIDATE_SCORE_MARGIN = 1.5
+MAX_TOPIC_CANDIDATES = 3
 
 
 TOPIC_LIBRARY: Dict[str, Dict[str, List[str] | tuple[str, ...]]] = {
@@ -249,6 +256,7 @@ class ConversationPlanner:
         mood_state: str | None = None,
         consent_profile: Dict[str, Any] | None = None,
         local_hour: int | None = None,
+        topic_selector: TopicSelector | None = None,
     ) -> ConversationPlan:
         text = _normalise_text(user_text)
         recent_topics = self._extract_recent_topics(recent_history)
@@ -291,6 +299,12 @@ class ConversationPlanner:
         self._apply_emotion_bias(scores, emotion_label, text)
         self._apply_mood_bias(scores, mood_state)
         selected_topic = self._pick_topic(scores, matches_by_topic, recent_topics, continuity_marker)
+        if topic_selector is not None:
+            candidates = self._build_candidates(selected_topic, scores, last_topic, continuity_marker)
+            if len(candidates) > 1:
+                chosen = topic_selector(candidates)
+                if isinstance(chosen, str) and chosen in scores:
+                    selected_topic = chosen
         selected_matches = matches_by_topic.get(selected_topic, [])
         continuity = self._resolve_continuity(selected_topic, last_topic, continuity_marker)
         response_intent = self._resolve_intent(
@@ -432,6 +446,29 @@ class ConversationPlanner:
                         return candidate
 
         return selected_topic
+
+    def _build_candidates(
+        self,
+        heuristic_pick: str,
+        scores: Dict[str, float],
+        last_topic: str | None,
+        continuity_marker: bool,
+    ) -> List[Tuple[str, float]]:
+        """Shortlist near-best topics for an external selector (the bandit)."""
+        if continuity_marker and heuristic_pick == last_topic:
+            return [(heuristic_pick, scores.get(heuristic_pick, 0.0))]
+
+        best_score = scores.get(heuristic_pick, 0.0)
+        ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        candidates = [(heuristic_pick, best_score)]
+        for topic, score in ordered:
+            if topic == heuristic_pick:
+                continue
+            if score >= best_score - CANDIDATE_SCORE_MARGIN and score > 0.0:
+                candidates.append((topic, score))
+            if len(candidates) >= MAX_TOPIC_CANDIDATES:
+                break
+        return candidates
 
     def _resolve_continuity(self, selected_topic: str, last_topic: str | None, continuity_marker: bool) -> str:
         if selected_topic == last_topic and continuity_marker:

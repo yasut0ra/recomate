@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 import logging
 import unicodedata
-
-from dotenv import load_dotenv
-from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +67,7 @@ INTENSIFIERS = ("すごく", "かなり", "めっちゃ", "本当に", "とて�
 
 
 class EmotionAnalyzer:
-    """Heuristic emotion analysis with a stable local fallback."""
-
-    def __init__(self, client: Optional[OpenAI] = None):
-        load_dotenv()
-        self.client: Optional[OpenAI] = client
-
-    def set_client(self, client: Optional[OpenAI]):
-        """Keep API parity with the previous implementation."""
-        self.client = client
+    """Heuristic emotion analysis based on keyword scoring; no remote calls."""
 
     def analyze_emotion(self, text: str) -> Dict:
         """Return structured emotion data without relying on remote calls."""

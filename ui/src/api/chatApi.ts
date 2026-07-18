@@ -13,6 +13,7 @@ export const resolveBaseUrl = () => {
 
 interface PostChatOptions {
   apiKey?: string | null;
+  userId?: string | null;
 }
 
 export const postChatMessage = async (message: string, options?: PostChatOptions): Promise<ChatApiResponse> => {
@@ -20,8 +21,11 @@ export const postChatMessage = async (message: string, options?: PostChatOptions
   const endpoint = baseUrl + '/api/chat';
 
   const payload: Record<string, unknown> = { text: message };
-  if (options) {
-    payload.api_key = options.apiKey ?? null;
+  if (options?.apiKey) {
+    payload.api_key = options.apiKey;
+  }
+  if (options?.userId) {
+    payload.user_id = options.userId;
   }
 
   const response = await fetch(endpoint, {

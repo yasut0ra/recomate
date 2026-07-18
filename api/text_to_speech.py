@@ -1,29 +1,40 @@
-import os
-import json
-import requests
+"""VOICEVOX-backed text-to-speech with a bounded on-disk cache."""
+
 import hashlib
+import json
+import logging
+import os
 import tempfile
-from pathlib import Path
 import time
+from pathlib import Path
+
+import requests
+
+logger = logging.getLogger(__name__)
 
 try:
     import pygame
 except Exception:  # noqa: BLE001
     pygame = None  # type: ignore[assignment]
 
+# Keep at most this many cached wav files; oldest (by mtime) are evicted.
+DEFAULT_CACHE_LIMIT = 200
+
+
 class TextToSpeech:
-    def __init__(self, voice_id=1, cache_dir="voice_cache"):
+    def __init__(self, voice_id=1, cache_dir="voice_cache", cache_limit: int = DEFAULT_CACHE_LIMIT):
         self.voice_id = voice_id
         self.base_url = "http://localhost:50021"
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
+        self.cache_limit = max(int(cache_limit), 1)
 
         # 音声の品質設定
         self.speed_scale = 1.0
         self.volume_scale = 1.0
         self.pre_phoneme_length = 0.1
         self.post_phoneme_length = 0.1
-        
+
         # VOICEVOXの状態確認
         self._check_voicevox_status()
 
@@ -45,24 +56,21 @@ class TextToSpeech:
         """VOICEVOXの状態を確認"""
         max_retries = 5
         retry_delay = 2  # 秒
-        
+
         for i in range(max_retries):
             try:
                 response = self._request('GET', '/version', timeout=3)
                 if response.status_code == 200:
-                    version = response.text
-                    print(f"VOICEVOX version: {version}")
+                    logger.info("VOICEVOX version: %s", response.text)
                     return
-                else:
-                    print(f"VOICEVOXサーバーが応答しません（試行 {i+1}/{max_retries}）")
+                logger.warning("VOICEVOX server responded with %s (attempt %d/%d)", response.status_code, i + 1, max_retries)
             except requests.exceptions.ConnectionError:
-                print(f"VOICEVOXサーバーに接続できません（試行 {i+1}/{max_retries}）")
-            
+                logger.warning("Cannot reach VOICEVOX server (attempt %d/%d)", i + 1, max_retries)
+
             if i < max_retries - 1:
-                print(f"{retry_delay}秒後に再試行します...")
                 time.sleep(retry_delay)
-        
-        print("警告: VOICEVOXサーバーに接続できません。音声合成機能は使用できません。")
+
+        logger.warning("VOICEVOX server is unreachable; speech synthesis is unavailable until it starts.")
         # エラーを発生させずに続行
 
     def _get_cache_path(self, text):
@@ -71,6 +79,21 @@ class TextToSpeech:
         cache_key = f"{text}_{self.voice_id}_{self.speed_scale}_{self.volume_scale}"
         hash_value = hashlib.md5(cache_key.encode()).hexdigest()
         return self.cache_dir / f"{hash_value}.wav"
+
+    def _prune_cache(self):
+        """キャッシュ上限を超えた分を古い順に削除"""
+        try:
+            entries = sorted(
+                self.cache_dir.glob("*.wav"),
+                key=lambda path: path.stat().st_mtime,
+            )
+            excess = len(entries) - self.cache_limit
+            for path in entries[:max(excess, 0)]:
+                path.unlink(missing_ok=True)
+            if excess > 0:
+                logger.debug("Pruned %d cached voice files", excess)
+        except OSError:
+            logger.debug("Voice cache pruning failed", exc_info=True)
 
     def _generate_audio(self, text):
         """音声を生成"""
@@ -84,12 +107,12 @@ class TextToSpeech:
                 "pre_phoneme_length": self.pre_phoneme_length,
                 "post_phoneme_length": self.post_phoneme_length
             }
-            
+
             # 音声合成のリクエスト
             response = self._request('POST', '/audio_query', params=params)
             if response.status_code != 200:
-                raise Exception(f"音声合成のリクエストに失敗: {response.status_code}")
-            
+                raise RuntimeError(f"音声合成のリクエストに失敗: {response.status_code}")
+
             # 音声を生成
             response = self._request(
                 'POST',
@@ -98,10 +121,10 @@ class TextToSpeech:
                 data=json.dumps(response.json()),
             )
             if response.status_code != 200:
-                raise Exception(f"音声の生成に失敗: {response.status_code}")
-            
+                raise RuntimeError(f"音声の生成に失敗: {response.status_code}")
+
             return response.content
-            
+
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"VOICEVOXとの通信でエラーが発生: {str(e)}")
 
@@ -115,12 +138,12 @@ class TextToSpeech:
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
                 temp_filename = temp_file.name
                 temp_file.write(audio_data)
-            
+
             try:
                 # 音声を再生
                 pygame.mixer.music.load(temp_filename)
                 pygame.mixer.music.play()
-                
+
                 # 再生が終わるまで待機
                 while pygame.mixer.music.get_busy():
                     pygame.time.Clock().tick(10)
@@ -128,14 +151,14 @@ class TextToSpeech:
                 # 再生が終わったら一時ファイルを削除
                 try:
                     os.unlink(temp_filename)
-                except Exception as e:
-                    print(f"一時ファイルの削除でエラーが発生: {str(e)}")
-            
+                except OSError:
+                    logger.debug("Temporary audio file cleanup failed", exc_info=True)
+
         except Exception as e:
-            print(f"音声生成でエラーが発生: {str(e)}")
+            logger.error("音声生成でエラーが発生: %s", e)
             raise
 
-    def set_voice_parameters(self, speed_scale=None, volume_scale=None, 
+    def set_voice_parameters(self, speed_scale=None, volume_scale=None,
                            pre_phoneme_length=None, post_phoneme_length=None):
         """音声パラメータを設定"""
         if speed_scale is not None:
@@ -151,15 +174,16 @@ class TextToSpeech:
         """テキストを音声データに変換して返す"""
         cache_path = self._get_cache_path(text)
         if cache_path.exists():
-            print("キャッシュから音声を読み込みます")
+            logger.debug("Serving synthesized voice from cache")
             return cache_path.read_bytes()
 
-        print("新しい音声を生成します")
         audio_data = self._generate_audio(text)
         cache_path.write_bytes(audio_data)
+        self._prune_cache()
         return audio_data
+
 
 if __name__ == "__main__":
     # テスト用
     tts = TextToSpeech()
-    tts.speak("こんにちは、私はAI Vtuberです。") 
+    tts.speak("こんにちは、私はRecoMateです。")

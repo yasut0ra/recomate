@@ -129,3 +129,57 @@ def test_planner_only_allows_light_question_when_user_asked_one() -> None:
 
     assert plan.response_intent == "答えつつ自然につなぐ"
     assert "軽い問いを1つだけ" in plan.follow_up_style
+
+
+def test_planner_lets_selector_choose_between_near_best_candidates() -> None:
+    planner = ConversationPlanner()
+    seen_candidates: list[list[str]] = []
+
+    def selector(candidates):
+        seen_candidates.append([topic for topic, _ in candidates])
+        return candidates[-1][0]
+
+    # 仕事・学び and 趣味・好きなもの score identically here, so the
+    # selector must receive both and its pick must win.
+    plan = planner.plan(
+        "仕事終わりに映画を見た。",
+        {"primary_emotions": ["neutral"], "intensity": 0.5},
+        topic_selector=selector,
+    )
+
+    assert seen_candidates, "selector should be invoked when multiple candidates exist"
+    assert set(seen_candidates[0]) >= {"仕事・学び", "趣味・好きなもの"}
+    assert plan.topic_family == seen_candidates[0][-1]
+
+
+def test_planner_ignores_selector_result_for_unknown_topic() -> None:
+    planner = ConversationPlanner()
+    text = "仕事の会議が長引いて疲れた。"
+    emotion = {"primary_emotions": ["sad"], "intensity": 0.6}
+
+    baseline = planner.plan(text, dict(emotion))
+    plan = planner.plan(text, dict(emotion), topic_selector=lambda candidates: "未知の話題")
+
+    assert plan.topic_family == baseline.topic_family
+
+
+def test_planner_skips_selector_when_user_signals_continuity() -> None:
+    planner = ConversationPlanner()
+    recent_history = [
+        {"topic": "人間関係", "user_input": "友達と気まずい", "response": "それは気になるね。"},
+    ]
+    calls: list[int] = []
+
+    def selector(candidates):
+        calls.append(len(candidates))
+        return candidates[0][0]
+
+    plan = planner.plan(
+        "その続きなんだけど、まだ返事できてない。",
+        {"primary_emotions": ["sad"], "intensity": 0.6},
+        recent_history=recent_history,
+        topic_selector=selector,
+    )
+
+    assert plan.topic_family == "人間関係"
+    assert not calls, "continuity should bypass the selector entirely"

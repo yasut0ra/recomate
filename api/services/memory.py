@@ -211,13 +211,15 @@ def select_relevant_memories(memories: List[Memory], query: Optional[str], limit
 
     query_text = (query or "").strip().lower()
     query_terms = _extract_keywords(query_text, limit=6) if query_text else []
+    # Rank by relevance, pinned state, and creation recency. last_ref is
+    # deliberately excluded: ranking by it would re-select whatever was
+    # selected last turn and lock out newer memories.
     ranked = sorted(
         memories,
         key=lambda memory: (
             _memory_relevance_score(memory, query_terms, query_text),
             1 if bool(memory.pinned) else 0,
-            memory.last_ref or memory.created_at,
-            memory.created_at,
+            memory.created_at or datetime.min.replace(tzinfo=timezone.utc),
         ),
         reverse=True,
     )
@@ -232,11 +234,13 @@ def select_relevant_memories(memories: List[Memory], query: Optional[str], limit
 
 def build_memory_context(session: Session, user_id: UUID, query: Optional[str], limit: int = 3) -> List[Dict[str, object]]:
     """Return small, prompt-safe memory snippets relevant to the current turn."""
+    # Candidate window is ordered by creation time, not last_ref, so that
+    # retrieval (which bumps last_ref below) cannot bias the next fetch.
     stmt = (
         sa.select(Memory)
         .where(Memory.user_id == user_id)
-        .order_by(Memory.pinned.desc(), Memory.last_ref.desc().nullslast(), Memory.created_at.desc())
-        .limit(max(limit * 8, 12))
+        .order_by(Memory.pinned.desc(), Memory.created_at.desc())
+        .limit(max(limit * 8, 24))
     )
     memories = session.execute(stmt).scalars().all()
     selected = select_relevant_memories(memories, query=query, limit=limit)

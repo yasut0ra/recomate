@@ -1,29 +1,36 @@
-import numpy as np
-import os
+"""LinUCB-based multi-armed bandit for topic recommendation."""
+
 import logging
-from typing import List, Dict, Tuple, Optional, Any
-from openai import OpenAI
 import time
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
 class TopicBandit:
-    """LinUCB-based multi-armed bandit for topic recommendation."""
+    """Contextual bandit that picks a topic from a candidate shortlist.
+
+    The conversation planner produces heuristic candidates; the bandit uses
+    LinUCB estimates learned from per-turn rewards to choose among them, so
+    reward feedback actually influences future topic selection.
+    """
 
     def __init__(
         self,
         topics: List[str],
         alpha: float = 0.1,
-        client: Optional[OpenAI] = None,
         recency_window: float = 180.0,
         recency_penalty: float = 0.4,
         frequency_penalty: float = 0.3,
         min_exploration_probability: float = 0.05,
+        max_history: int = 200,
     ):
         self.topics = topics
         self.n_topics = len(topics)
         self.conversation_history: List[Dict] = []
+        self.max_history = max(int(max_history), 1)
 
         # LinUCB parameters
         self.emotion_labels = ['happy', 'sad', 'angry', 'surprised', 'neutral']
@@ -51,114 +58,64 @@ class TopicBandit:
         self.recent_topic_buffer: List[int] = []
         self.recent_buffer_size = 5
 
-        self.client: Optional[OpenAI] = None
-        self._client_initialisation_error: Optional[Exception] = None
+    def select_from_candidates(
+        self,
+        candidate_topics: Sequence[str],
+        features: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Tuple[int, str]]:
+        """Pick one topic among the given candidates via LinUCB scores.
 
-        if client is not None:
-            self.client = client
-        else:
-            api_key = os.getenv('OPENAI_API_KEY')
-            if api_key:
-                try:
-                    self.client = OpenAI(api_key=api_key)
-                except Exception as exc:
-                    self._client_initialisation_error = exc
-                    logger.warning("TopicBandit could not initialise OpenAI client: %s", exc)
-                    self.client = None
-            else:
-                logger.warning("TopicBandit: OpenAI API key is not configured; exploration and evaluation will use fallbacks.")
+        Records the selection (counts/recency) and returns (index, topic),
+        or None when no candidate is known to the bandit.
+        """
+        candidate_indices = [
+            self.topics.index(topic) for topic in candidate_topics if topic in self.topics
+        ]
+        if not candidate_indices:
+            return None
 
-    def set_client(self, client: Optional[OpenAI]):
-        """Update the OpenAI client instance used for bandit decisions."""
-        self.client = client
-        
-    def select_topic(self, context: str = "", features: Optional[Dict[str, Any]] = None) -> Tuple[int, str]:
-        """LinUCB でコンテキストを考慮したトピックを選択"""
-        context = context or ""
-        if features is None:
-            features = {"context_text": context}
-        else:
-            features = dict(features)
-            features.setdefault("context_text", context)
+        features = dict(features or {})
+        features.setdefault("context_text", "")
 
-        best_idx = 0
+        best_idx = candidate_indices[0]
         best_score = float('-inf')
         scores: List[Tuple[str, float]] = []
 
-        for idx in range(self.n_topics):
+        for idx in candidate_indices:
             x = self._get_feature_vector(idx, features)
             A_inv = self.A_inv_matrices[idx]
             theta = A_inv @ self.b_vectors[idx]
             exploration_bonus = self.exploration_param * np.sqrt(np.dot(x, A_inv @ x))
-            base_score = float(np.dot(theta, x) + exploration_bonus)
-            penalty = self._calculate_topic_penalty(idx)
-            score = base_score - penalty
+            score = float(np.dot(theta, x) + exploration_bonus) - self._calculate_topic_penalty(idx)
             scores.append((self.topics[idx], score))
-
             if score > best_score:
                 best_score = score
                 best_idx = idx
 
         if self.total_selections > 0 and np.random.rand() < self.min_exploration_probability:
-            unexplored = [i for i in range(self.n_topics) if self.topic_frequency[i] == 0]
-            candidate_indices = unexplored or list(range(self.n_topics))
-            best_idx = np.random.choice(candidate_indices)
-            best_score = dict(scores).get(self.topics[best_idx], best_score)
+            unexplored = [idx for idx in candidate_indices if self.topic_frequency[idx] == 0]
+            best_idx = int(np.random.choice(unexplored or candidate_indices))
 
         if logger.isEnabledFor(logging.DEBUG):
-            top_candidates = sorted(scores, key=lambda item: item[1], reverse=True)[:3]
             logger.debug(
-                "Bandit topic scores: %s (selected=%s score=%.3f penalty=%.3f)",
-                ", ".join(f"{name}:{score:.3f}" for name, score in top_candidates),
+                "Bandit candidate scores: %s (selected=%s)",
+                ", ".join(f"{name}:{score:.3f}" for name, score in scores),
                 self.topics[best_idx],
-                best_score,
-                self._calculate_topic_penalty(best_idx),
             )
 
-        self._last_contexts[best_idx] = context
+        self._last_contexts[best_idx] = str(features.get("context_text", ""))
         self._last_features[best_idx] = features
-        current_time = time.time()
-        self.last_selected_times[best_idx] = current_time
-        self.total_selections += 1
-        self.topic_frequency[best_idx] += 1
-        self.counts[best_idx] += 1
-        self._record_recent_topic(best_idx)
+        self._record_selection(best_idx)
         return best_idx, self.topics[best_idx]
-    
-    def _explore_with_llm(self, context: str) -> Tuple[int, str]:
-        """LLMを使用して関連トピックを探索"""
-        if self.client is None:
-            logger.warning("TopicBandit: OpenAI client unavailable; selecting a random topic instead of LLM-guided exploration.")
-            topic_idx = np.random.randint(self.n_topics)
-            return topic_idx, self.topics[topic_idx]
 
-        try:
-            prompt = f"""
-            以下の会話の文脈を考慮して、最も適切なトピックを選択してください。
-            利用可能なトピック: {', '.join(self.topics)}
-            
-            会話の文脈: {context}
-            
-            最も適切なトピックを1つだけ選んでください。
-            """
-            
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "あなたは会話の文脈に基づいて最適なトピックを選択するアシスタントです。"},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-
-            selected_topic = (response.choices[0].message.content or '').strip()
-            topic_idx = self.topics.index(selected_topic)
-            return topic_idx, selected_topic
-            
-        except Exception as e:
-            print(f"LLMによるトピック選択でエラーが発生: {e}")
-            # エラー時はランダム選択にフォールバック
-            topic_idx = np.random.randint(self.n_topics)
-            return topic_idx, self.topics[topic_idx]
+    def select_topic(self, context: str = "", features: Optional[Dict[str, Any]] = None) -> Tuple[int, str]:
+        """LinUCB selection over the full topic list."""
+        features = dict(features or {})
+        features.setdefault("context_text", context or "")
+        selected = self.select_from_candidates(self.topics, features)
+        if selected is None:  # only possible with an empty topic list
+            raise ValueError("TopicBandit has no topics to select from")
+        return selected
 
     def _get_feature_vector(self, topic_idx: int, feature_payload: Dict[str, Any]) -> np.ndarray:
         """LinUCB 用の特徴量ベクトルを生成"""
@@ -193,7 +150,7 @@ class TopicBandit:
         idx += 1
 
         emotion_data = feature_payload.get('emotion') or {}
-        primary_emotions = emotion_data.get('primary_emotions')
+        primary_emotions = emotion_data.get('primary_emotions') if isinstance(emotion_data, dict) else None
         primary = ''
         if isinstance(primary_emotions, list) and primary_emotions:
             primary = str(primary_emotions[0]).lower()
@@ -226,6 +183,13 @@ class TopicBandit:
 
         return vector
 
+    def _record_selection(self, topic_idx: int) -> None:
+        self.last_selected_times[topic_idx] = time.time()
+        self.total_selections += 1
+        self.topic_frequency[topic_idx] += 1
+        self.counts[topic_idx] += 1
+        self._record_recent_topic(topic_idx)
+
     def _record_recent_topic(self, topic_idx: int) -> None:
         self.recent_topic_buffer.append(topic_idx)
         if len(self.recent_topic_buffer) > self.recent_buffer_size:
@@ -251,103 +215,7 @@ class TopicBandit:
             penalty += self.recency_penalty * repeat_ratio * 0.5
 
         return penalty
-    
-    def evaluate_response(self, response: str, user_input: str) -> float:
-        """LLMを使用して応答の質を評価"""
-        if self.client is None:
-            logger.warning("TopicBandit: OpenAI client unavailable; returning default evaluation score.")
-            return 0.5
 
-        try:
-            prompt = f"""
-            以下の会話の応答を評価してください：
-            
-            ユーザーの入力: {user_input}
-            VTuberの応答: {response}
-            
-            以下の基準で0.0から1.0の間で評価してください：
-            1. 応答の自然さと適切さ
-            2. 感情表現の豊かさ
-            3. 会話の継続性
-            4. トピックとの関連性
-            
-            各基準の評価と総合評価を以下の形式で返してください：
-            1. 0.8 (自然さと適切さ)
-            2. 0.7 (感情表現の豊かさ)
-            3. 0.9 (会話の継続性)
-            4. 0.8 (トピックとの関連性)
-            
-            総合評価: 0.8
-            """
-            
-            evaluation = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "あなたは会話の質を評価する専門家です。各基準の評価と総合評価を返してください。"},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-
-            score_text = (evaluation.choices[0].message.content or '').strip()
-            print("\n評価結果:")
-            print(score_text)
-            
-            try:
-                # 総合評価を探す
-                import re
-                match = re.search(r'総合評価:\s*(\d+\.?\d*)', score_text)
-                if match:
-                    score = float(match.group(1))
-                else:
-                    # 総合評価が見つからない場合は最初の数値を探す
-                    match = re.search(r'\d+\.?\d*', score_text)
-                    if match:
-                        score = float(match.group())
-                    else:
-                        score = 0.5  # デフォルト値
-            except ValueError:
-                score = 0.5  # デフォルト値
-            
-            return max(0.0, min(1.0, score))  # 0.0から1.0の範囲に制限
-            
-        except Exception as e:
-            print(f"応答評価でエラーが発生: {e}")
-            return 0.5  # エラー時は中立的な評価を返す
-    
-    def generate_subtopics(self, main_topic: str) -> List[str]:
-        """メイントピックに関連するサブトピックを生成"""
-        if self.client is None:
-            logger.warning("TopicBandit: OpenAI client unavailable; skipping subtopic generation.")
-            return self.subtopic_cache.get(main_topic, [])
-
-        try:
-            prompt = f"""
-            「{main_topic}」に関連する、具体的な会話のトピックを5つ生成してください。
-            各トピックは具体的で、会話を発展させやすいものにしてください。
-            
-            形式：
-            1. トピック1
-            2. トピック2
-            ...
-            """
-            
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "あなたは会話のトピックを生成する専門家です。"},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-
-            subtopics = (response.choices[0].message.content or '').strip().split('\n')
-            parsed = [topic.split('. ')[1] for topic in subtopics if '. ' in topic]
-            self.subtopic_cache[main_topic] = parsed
-            return parsed
-
-        except Exception as e:
-            print(f"サブトピック生成でエラーが発生: {e}")
-            return self.subtopic_cache.get(main_topic, [])
-    
     def update(self, topic_idx: int, reward: float, features: Optional[Dict[str, Any]] = None):
         """LinUCB パラメータの更新"""
         if topic_idx < 0 or topic_idx >= self.n_topics:
@@ -378,7 +246,7 @@ class TopicBandit:
             return
 
         self.values[topic_idx] += 0.1 * (reward - self.values[topic_idx])
-    
+
     def get_topic_stats(self) -> Dict:
         """各トピックの統計情報を取得"""
         return {
@@ -398,7 +266,7 @@ class TopicBandit:
             'totalSelections': int(self.total_selections),
             'featureDim': self.feature_dim,
         }
-    
+
     def add_to_history(self, user_input: str, response: str, topic: str, reward: Optional[float] = None):
         """会話履歴に追加"""
         entry: Dict[str, Any] = {
@@ -410,6 +278,8 @@ class TopicBandit:
         if reward is not None:
             entry['reward'] = reward
         self.conversation_history.append(entry)
+        if len(self.conversation_history) > self.max_history:
+            del self.conversation_history[: len(self.conversation_history) - self.max_history]
 
     def record_topic_selection(self, topic: str) -> Optional[int]:
         """Record a topic choice when selection is handled outside LinUCB."""
@@ -418,20 +288,5 @@ class TopicBandit:
             return None
 
         topic_idx = self.topics.index(topic)
-        self.last_selected_times[topic_idx] = time.time()
-        self.total_selections += 1
-        self.topic_frequency[topic_idx] += 1
-        self.counts[topic_idx] += 1
-        self._record_recent_topic(topic_idx)
+        self._record_selection(topic_idx)
         return topic_idx
-    
-    def get_stats(self) -> Dict:
-        """トピックの統計情報を取得"""
-        stats = {}
-        for i, topic in enumerate(self.topics):
-            stats[topic] = {
-                'count': self.counts[i],
-                'avg_reward': self.values[i],
-                'expected_reward': self.values[i]
-            }
-        return stats 

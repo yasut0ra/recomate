@@ -1,13 +1,13 @@
 # recomate コードベース整理メモ
 
-この文書は `2026-03-18` 時点の実装を基準に、現役構成・残置コード・整理優先度をまとめたものです。
+この文書は `2026-07-19` 時点の実装を基準に、現役構成・残置コード・整理優先度をまとめたものです（初版: 2026-03-18）。
 
 ## 現在の全体像
 
 - 実運用に近い本体は `api/` と `ui/` です。
 - `api/` は FastAPI ベースのバックエンドで、会話・音声・ムード・メモリ・儀式・Agent リクエストを持ちます。
 - `ui/` は React + TypeScript + Vite のフロントエンドで、Electron からも起動できます。
-- `legacy/` には旧 Node/Express / Electron 系のコードを退避しています。現行 README の主系統ではありません。
+- `legacy/` には旧 Node/Express / Electron 系のコードと旧 `vtuber_model.py` を退避しています。現行 README の主系統ではありません。
 
 ## ディレクトリ別の役割
 
@@ -15,11 +15,20 @@
 
 - 現役バックエンド。
 - `api/main.py`
-  - FastAPI アプリのエントリポイント。
-  - ルーティング定義と `VtuberAI` 実装が同居しており、責務が集中しています。
+  - FastAPI アプリのエントリポイント。ルーティングと CORS/lifespan 設定のみを持つ薄い層です。
+  - チャット系エンドポイントは同期 `def` で宣言し、FastAPI のスレッドプールで実行されるため、LLM 呼び出し中もイベントループが塞がりません。
+- `api/chat_engine.py`
+  - 会話オーケストレーションの本体 (`ChatEngine`)。
+  - 感情分析 → ランタイムコンテキスト → プランナー+バンディットによる話題選択 → LLM 生成（`chat.completions` を主モデル→フォールバックモデルの順に試行）→ 報酬計算 → 永続化、を1ターンとして処理します。
+  - 会話履歴はユーザーごとの `_UserSession`（上限50件）に分離され、リクエスト間で共有される可変状態はロックで保護されています。
+  - API キーはリクエスト単位で解決し、共有クライアントを書き換えません。
+  - LLM 不通時の定型フォールバック応答はバンディット学習と自動メモリ昇格の対象外です。
 - `api/services/`
   - DB を使う機能単位のサービス層。
+  - `speech.py` は TTS（VOICEVOX）と音声認識をチャットから分離したサービスです。
   - `rituals.py`, `memory.py`, `mood.py`, `agent_requests.py`, `album.py`, `consent.py` は比較的分離されています。
+- `api/topic_bandit.py`
+  - LinUCB バンディット。プランナーが絞った候補から `select_from_candidates` で選択し、ターンごとの報酬で更新されます（学習が実際に選択へ反映されます）。
 - `api/db/`
   - SQLAlchemy モデル、接続設定、Alembic マイグレーション。
 
@@ -65,37 +74,38 @@
 - 現在の会話系実装は WebRTC/WS 中心ではなく、REST と軽量 WebSocket の混在です。
 - ベクトル DB や S3 互換ストレージは未実装で、メモリ・アルバムは PostgreSQL 前提の軽量実装です。
 
-## 整理の観点で重要なポイント
+## 2026-07-19 の整理で解消済みの項目
 
-### 1. `api/main.py` に責務が集まりすぎている
+- `api/main.py` の責務集中: `ChatEngine` / `SpeechService` へ分割し、REST と WebSocket は同じ `handle_turn` を共有。
+- グローバル会話状態の混線: 履歴・感情・報酬をユーザー別セッションとターン戻り値に分離。
+- Responses API の不正な `content` 形式による常時フォールバック: `chat.completions`（主→フォールバックモデル）に一本化。
+- メモリ検索の自己強化ループ: 候補取得を `created_at` 基準に変更（`last_ref` は利用記録のみ）。
+- バンディットのデッドコード化: プランナー候補からの LinUCB 選択に接続。未使用の gpt-3.5-turbo 系メソッドは削除。
+- UI: `user_id` を送信し、サーバー履歴でローカルメッセージを置き換える挙動を廃止。
+- その他: 起動時の2秒スリープ削除、エラー詳細のクライアント漏洩防止、`print` の logger 化、voice_cache 上限（200ファイル）、ビルドチャンク分割。
 
-- ルーティング
-- Pydantic モデル
-- `VtuberAI`
-- 音声・感情・会話オーケストレーション
+## 整理の観点で残っているポイント
 
-この構成だと、会話機能の変更が API 層と強く結びつきます。次の整理では `chat`, `audio`, `topics` を router/service 単位へ切り出すのが自然です。
-
-### 2. 現役コードと旧コードが同居している
+### 1. 現役コードと旧コードが同居している
 
 - 現役: `api/`, `ui/`
-- 旧構成の退避先: `legacy/node-express/`, `legacy/electron/`
+- 旧構成の退避先: `legacy/node-express/`, `legacy/electron/`, `legacy/vtuber_model.py`
 
 いまの混在状態だと、新しく入る人が「どれが本番系なのか」を見誤りやすいです。
 
-### 3. フロントエンドは検証パネルが多く、プロダクト UI と開発 UI が混ざっている
+### 2. フロントエンドは検証パネルが多く、プロダクト UI と開発 UI が混ざっている
 
 - チャット体験そのもの
 - API 検証用のパネル
 
 役割は明確なので、将来的には「通常 UI」と「開発/検証 UI」を分けると読みやすくなります。
 
-## 2026-03-18 時点のチェック結果
+## 2026-07-19 時点のチェック結果
 
-- `python -m compileall api`: 成功
+- `python -m pytest tests`: 54 件成功（エンドポイントテスト含む）
 - `ui` の `npm run lint`: 成功
-- `ui` の `npm run build`: 成功
-- ビルド時に 500 kB 超のチャンク警告あり
+- `ui` の `npm run build`: 成功（チャンク分割済み、500 kB 警告なし）
+- 実サーバーでの `/health` / `/api/chat`（主モデル経由の実応答・エピソード永続化・ユーザー別履歴・バンディット学習）を確認
 
 ## ローカル開発の現行導線
 
@@ -111,12 +121,12 @@
 - `api/requirements-optional.txt`
   - 音声合成、音声認識、実験用ローカル機能の依存
 - `api/requirements-dev.txt`
-  - 現状は `pytest` を定義。回帰テスト実行用
+  - `pytest` と `httpx`（FastAPI TestClient 用）。回帰テスト実行用
 
 ## 次にやると効果が大きい整理
 
-1. `api/main.py` に残っている chat / websocket / `VtuberAI` 本体をさらに分割する
-2. `legacy/` 配下の旧構成を削除するか、資料として残すか方針を決める
-3. UI の API デモパネルを `features/devtools` 的にまとめる
-4. 最小限のフロントテストを追加する
-5. `TopicBandit` と `EmotionAnalyzer` の OpenAI 呼び出しをサービス境界の内側に寄せる
+1. `legacy/` 配下の旧構成を削除するか、資料として残すか方針を決める
+2. UI の API デモパネルを `features/devtools` 的にまとめる
+3. 最小限のフロントテストを追加する
+4. ユーザー別セッション履歴の永続化（現状はプロセス内メモリ + episodes テーブル）
+5. WebSocket 経路の UI 利用（現状 UI は REST のみ。WS は API として維持）

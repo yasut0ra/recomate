@@ -14,12 +14,35 @@ import type {
   CharacterModel,
   ChatMessage,
   ChatApiResponse,
-  ConversationHistoryEntry,
   TopicStatsResponse,
 } from '../types';
 
 const API_KEY_STORAGE = 'recomate:api-key';
 const VOICE_ENABLED_STORAGE = 'recomate:voice-enabled';
+const USER_ID_STORAGE = 'recomate:user-id';
+
+// Stable per-browser user id so the backend can keep per-user history and
+// memories. Falls back to null (server default user) when unavailable.
+const ensureLocalUserId = (): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const existing = localStorage.getItem(USER_ID_STORAGE);
+    if (existing) {
+      return existing;
+    }
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      const generated = crypto.randomUUID();
+      localStorage.setItem(USER_ID_STORAGE, generated);
+      return generated;
+    }
+    return null;
+  } catch (storageError) {
+    console.warn('Failed to access user id storage', storageError);
+    return null;
+  }
+};
 
 const createInitialAssistantMessage = (): ChatMessage => ({
   id: 'assistant-intro',
@@ -72,108 +95,11 @@ const normaliseEmotion = (
   return 'thinking';
 };
 
-const resolveTimestamp = (raw: ConversationHistoryEntry | undefined, index: number, total: number): string => {
-  if (raw && !Array.isArray(raw) && typeof raw === 'object' && 'timestamp' in raw) {
-    const { timestamp } = raw as { timestamp?: unknown };
-    if (typeof timestamp === 'number' && Number.isFinite(timestamp)) {
-      return new Date(timestamp * 1000).toISOString();
-    }
-    if (typeof timestamp === 'string') {
-      const parsed = new Date(timestamp);
-      if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString();
-      }
-    }
-  }
-  const offsetSeconds = Math.max(total - index, 1);
-  return new Date(Date.now() - offsetSeconds * 1000).toISOString();
-};
-
-const normaliseHistory = (
-  history: ChatApiResponse['conversation_history'],
-): ChatMessage[] | null => {
-  if (!history || history.length === 0) {
-    return null;
-  }
-
-  const result: ChatMessage[] = [];
-
-  history.forEach((entry, index) => {
-    const timestamp = resolveTimestamp(entry as ConversationHistoryEntry, index, history.length);
-
-    if (Array.isArray(entry)) {
-      const userInput = entry[0];
-      const response = entry[1];
-      if (typeof userInput === 'string') {
-        result.push({
-          id: 'history-user-' + index,
-          sender: 'user',
-          text: userInput,
-          timestamp,
-        });
-      }
-      if (typeof response === 'string') {
-        result.push({
-          id: 'history-assistant-' + index,
-          sender: 'assistant',
-          text: response,
-          timestamp,
-        });
-      }
-      return;
-    }
-
-    if (entry && typeof entry === 'object') {
-      const entryObject = entry as Extract<ConversationHistoryEntry, Record<string, unknown>>;
-      const rawAssistantEmotion = 'assistant_emotion' in entryObject
-        ? entryObject.assistant_emotion as ChatApiResponse['assistant_emotion']
-        : entryObject.emotion as ChatApiResponse['emotion'] | undefined;
-      const emotion = rawAssistantEmotion ? normaliseEmotion(rawAssistantEmotion) : undefined;
-      const reward = typeof entryObject.reward === 'number' ? entryObject.reward : undefined;
-
-      if (typeof entryObject.user_input === 'string') {
-        result.push({
-          id: 'history-user-' + index,
-          sender: 'user',
-          text: entryObject.user_input,
-          timestamp,
-        });
-      }
-      if (typeof entryObject.response === 'string') {
-        result.push({
-          id: 'history-assistant-' + index,
-          sender: 'assistant',
-          text: entryObject.response,
-          timestamp,
-          emotion,
-          reward,
-        });
-      }
-      if (!entryObject.user_input && entryObject.role && entryObject.content) {
-        const sender = entryObject.role === 'assistant' ? 'assistant' : 'user';
-        result.push({
-          id: 'history-' + sender + '-' + index,
-          sender,
-          text: String(entryObject.content),
-          timestamp,
-          emotion: sender === 'assistant' ? emotion : undefined,
-          reward: sender === 'assistant' ? reward : undefined,
-        });
-      }
-    }
-  });
-
-  if (result.length === 0) {
-    return null;
-  }
-
-  return result;
-};
-
 export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([createInitialAssistantMessage()]);
   const [characterEmotion, setCharacterEmotion] = useState<CharacterEmotion>('happy');
   const [characterModel, setCharacterModel] = useState<CharacterModel>('rico');
+  const [userId] = useState<string | null>(() => ensureLocalUserId());
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [apiKey, setApiKeyState] = useState<string | null>(() => {
@@ -372,7 +298,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setIsProcessing(true);
 
     try {
-      const apiResponse = await postChatMessage(trimmed, { apiKey });
+      const apiResponse = await postChatMessage(trimmed, { apiKey, userId });
       const rawAssistantEmotion = apiResponse.assistant_emotion ?? apiResponse.emotion;
       const assistantEmotion = normaliseEmotion(rawAssistantEmotion);
       const assistantMessage: ChatMessage = {
@@ -384,17 +310,13 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         reward: typeof apiResponse.reward === 'number' ? apiResponse.reward : undefined,
       };
 
-      const historyMessages = normaliseHistory(apiResponse.conversation_history);
-      setMessages(prev => (historyMessages ? historyMessages : prev.concat(assistantMessage)));
+      // Local messages are the source of truth for this window; the server
+      // history is per-user session state used for prompts, not for display.
+      setMessages(prev => prev.concat(assistantMessage));
       setCharacterEmotion(assistantEmotion);
 
-      if (voiceEnabled) {
-        const latestAssistant = historyMessages
-          ? historyMessages.filter(message => message.sender === 'assistant').at(-1)
-          : assistantMessage;
-        if (latestAssistant?.text) {
-          void playAssistantSpeech(latestAssistant.text);
-        }
+      if (voiceEnabled && assistantMessage.text) {
+        void playAssistantSpeech(assistantMessage.text);
       }
     } catch (err) {
       console.error('Failed to send chat message', err);
@@ -409,7 +331,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
       setIsProcessing(false);
     }
-  }, [apiKey, playAssistantSpeech, voiceEnabled]);
+  }, [apiKey, userId, playAssistantSpeech, voiceEnabled]);
 
   const value = useMemo(() => ({
     messages,
