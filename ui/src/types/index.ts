@@ -20,6 +20,10 @@ export interface ChatMessage {
   timestamp: string;
   emotion?: CharacterEmotion;
   reward?: number;
+  turnId?: string;
+  topic?: string;
+  feedbackEnabled?: boolean;
+  feedback?: 'like' | 'dislike';
 }
 
 export type ConversationHistoryEntry =
@@ -45,11 +49,21 @@ export interface ChatApiResponse {
   reward?: number;
   conversation_history?: ConversationHistoryEntry[];
   turn_metadata?: {
+    turn_id?: string;
+    feedback_enabled?: boolean;
     episode_id?: string | null;
     memory_id?: string | null;
     topic?: string | null;
     user_id?: string | null;
   };
+}
+
+export interface ChatFeedbackResponse {
+  turn_id: string;
+  topic: string;
+  applied: boolean;
+  reward?: number | null;
+  reason?: 'already_rated' | 'not_learnable' | 'learning_paused' | null;
 }
 
 export interface TopicMetric {

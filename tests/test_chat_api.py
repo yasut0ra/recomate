@@ -119,3 +119,119 @@ def test_analyze_emotion_endpoint(client) -> None:
 
     assert response.status_code == 200
     assert response.json()["emotion"] == "angry"
+
+
+def _topic_values(test_client):
+    stats = test_client.get("/api/topics/stats").json()
+    return {topic: metric["value"] for topic, metric in stats["topics"].items()}
+
+
+def test_chat_turn_metadata_exposes_turn_id_and_topic(client) -> None:
+    payload = client.post("/api/chat", json={"text": "仕事の会議で疲れた"}).json()
+
+    metadata = payload["turn_metadata"]
+    assert metadata["turn_id"]
+    assert metadata["topic"]
+    assert metadata["feedback_enabled"] is True
+    assert payload["conversation_history"][-1]["turn_id"] == metadata["turn_id"]
+    assert payload["conversation_history"][-1]["topic"] == metadata["topic"]
+
+
+def test_bandit_learns_from_the_users_next_message(client) -> None:
+    user_id = str(uuid.uuid4())
+    first = client.post("/api/chat", json={"text": "仕事の会議で疲れた", "user_id": user_id}).json()
+    topic = first["turn_metadata"]["topic"]
+
+    # No reaction yet, so nothing has been learned.
+    assert all(value == 0.0 for value in _topic_values(client).values())
+
+    client.post("/api/chat", json={"text": "そうそう、それで上司にも話してみたんだ", "user_id": user_id})
+
+    assert _topic_values(client)[topic] > 0.0
+
+
+def test_feedback_endpoint_applies_once(client, isolated_bandit_state) -> None:
+    user_id = str(uuid.uuid4())
+    turn = client.post("/api/chat", json={"text": "映画を観てきた", "user_id": user_id}).json()["turn_metadata"]
+
+    liked = client.post(
+        "/api/chat/feedback",
+        json={"turn_id": turn["turn_id"], "like": True, "user_id": user_id},
+    )
+    assert liked.status_code == 200
+    assert liked.json() == {
+        "turn_id": turn["turn_id"],
+        "topic": turn["topic"],
+        "applied": True,
+        "reward": 1.0,
+        "reason": None,
+    }
+    assert _topic_values(client)[turn["topic"]] > 0.0
+    assert isolated_bandit_state.exists()
+
+    repeated = client.post(
+        "/api/chat/feedback",
+        json={"turn_id": turn["turn_id"], "like": False, "user_id": user_id},
+    ).json()
+    assert repeated["applied"] is False
+    assert repeated["reason"] == "already_rated"
+
+
+def test_feedback_for_unknown_turn_or_other_user_is_404(client) -> None:
+    user_id = str(uuid.uuid4())
+    turn_id = client.post("/api/chat", json={"text": "雑談しよ", "user_id": user_id}).json()["turn_metadata"]["turn_id"]
+
+    assert client.post("/api/chat/feedback", json={"turn_id": "missing", "like": True}).status_code == 404
+    other_user = client.post(
+        "/api/chat/feedback",
+        json={"turn_id": turn_id, "like": True, "user_id": str(uuid.uuid4())},
+    )
+    assert other_user.status_code == 404
+
+
+def test_feedback_on_fallback_reply_does_not_train(offline_client) -> None:
+    turn = offline_client.post("/api/chat", json={"text": "眠れなくてつらい"}).json()["turn_metadata"]
+    assert turn["feedback_enabled"] is False
+
+    result = offline_client.post("/api/chat/feedback", json={"turn_id": turn["turn_id"], "like": True}).json()
+
+    assert result["applied"] is False
+    assert result["reason"] == "not_learnable"
+    assert all(value == 0.0 for value in _topic_values(offline_client).values())
+
+
+def test_learning_paused_blocks_implicit_and_explicit_learning(client, monkeypatch) -> None:
+    original = ChatEngine._default_runtime_context
+
+    def paused_context(self, user_id, current_text=""):
+        context = original(self, user_id)
+        context["consent"]["learning_paused"] = True
+        return context
+
+    monkeypatch.setattr(ChatEngine, "_build_runtime_context", paused_context)
+
+    first = client.post("/api/chat", json={"text": "仕事の会議で疲れた"}).json()["turn_metadata"]
+    second = client.post("/api/chat", json={"text": "そうそう、それでね"}).json()["turn_metadata"]
+    feedback = client.post("/api/chat/feedback", json={"turn_id": second["turn_id"], "like": True}).json()
+
+    assert first["feedback_enabled"] is False
+    assert feedback["applied"] is False
+    assert all(value == 0.0 for value in _topic_values(client).values())
+
+
+def test_bandit_state_survives_engine_restart(client, isolated_bandit_state) -> None:
+    turn = client.post("/api/chat", json={"text": "推しのライブに行った"}).json()["turn_metadata"]
+    client.post("/api/chat/feedback", json={"turn_id": turn["turn_id"], "like": True})
+    learned = _topic_values(client)[turn["topic"]]
+
+    restarted = ChatEngine()
+
+    assert restarted.topic_summary()["topics"][turn["topic"]]["value"] == learned
+
+
+def test_continuation_keeps_topic_without_database(client) -> None:
+    user_id = str(uuid.uuid4())
+    first = client.post("/api/chat", json={"text": "上司との会議がしんどかった", "user_id": user_id}).json()
+    second = client.post("/api/chat", json={"text": "その続きなんだけど", "user_id": user_id}).json()
+
+    assert second["turn_metadata"]["topic"] == first["turn_metadata"]["topic"]

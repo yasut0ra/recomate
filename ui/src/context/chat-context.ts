@@ -9,6 +9,7 @@ import type {
 export interface ChatContextType {
   messages: ChatMessage[];
   sendMessage: (text: string) => Promise<void>;
+  sendFeedback: (messageId: string, like: boolean) => Promise<void>;
   isProcessing: boolean;
   error: string | null;
   characterEmotion: CharacterEmotion;

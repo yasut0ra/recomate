@@ -2,11 +2,29 @@
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+STATE_VERSION = 1
+# Planner heuristic scores above this are treated as a full keyword match.
+HEURISTIC_SCORE_SCALE = 5.0
+
+
+@dataclass(frozen=True)
+class BanditSelection:
+    """A topic choice plus the exact context vector it was scored with.
+
+    LinUCB must be updated with the same vector used at selection time;
+    recomputing it later would see post-selection recency/popularity values.
+    """
+
+    topic_idx: int
+    topic: str
+    context: np.ndarray
 
 
 class TopicBandit:
@@ -35,7 +53,7 @@ class TopicBandit:
         # LinUCB parameters
         self.emotion_labels = ['happy', 'sad', 'angry', 'surprised', 'neutral']
         self.max_subtopics = 5
-        self.feature_dim = 4 + len(self.emotion_labels) + 2  # bias, keyword match, popularity, recency, emotions, subtopic stats
+        self.feature_dim = 4 + len(self.emotion_labels) + 2  # bias, heuristic score, popularity, recency, emotions, subtopic stats
         self.exploration_param = max(alpha, 0.01)
         self.A_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
         self.A_inv_matrices = [np.identity(self.feature_dim) for _ in range(self.n_topics)]
@@ -48,8 +66,6 @@ class TopicBandit:
 
         self.last_selected_times = np.zeros(self.n_topics)
         self.total_selections = 0
-        self._last_contexts: Dict[int, str] = {}
-        self._last_features: Dict[int, Dict[str, Any]] = {}
         self.subtopic_cache: Dict[str, List[str]] = {topic: [] for topic in topics}
         self.recency_window = max(recency_window, 1.0)
         self.recency_penalty = max(recency_penalty, 0.0)
@@ -58,15 +74,16 @@ class TopicBandit:
         self.recent_topic_buffer: List[int] = []
         self.recent_buffer_size = 5
 
-    def select_from_candidates(
+    def select_with_context(
         self,
         candidate_topics: Sequence[str],
         features: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Tuple[int, str]]:
+    ) -> Optional[BanditSelection]:
         """Pick one topic among the given candidates via LinUCB scores.
 
-        Records the selection (counts/recency) and returns (index, topic),
-        or None when no candidate is known to the bandit.
+        Records the selection (counts/recency) and returns it together with
+        the context vector that should later be passed to ``update``, or
+        None when no candidate is known to the bandit.
         """
         candidate_indices = [
             self.topics.index(topic) for topic in candidate_topics if topic in self.topics
@@ -80,9 +97,11 @@ class TopicBandit:
         best_idx = candidate_indices[0]
         best_score = float('-inf')
         scores: List[Tuple[str, float]] = []
+        vectors: Dict[int, np.ndarray] = {}
 
         for idx in candidate_indices:
             x = self._get_feature_vector(idx, features)
+            vectors[idx] = x
             A_inv = self.A_inv_matrices[idx]
             theta = A_inv @ self.b_vectors[idx]
             exploration_bonus = self.exploration_param * np.sqrt(np.dot(x, A_inv @ x))
@@ -103,10 +122,19 @@ class TopicBandit:
                 self.topics[best_idx],
             )
 
-        self._last_contexts[best_idx] = str(features.get("context_text", ""))
-        self._last_features[best_idx] = features
         self._record_selection(best_idx)
-        return best_idx, self.topics[best_idx]
+        return BanditSelection(best_idx, self.topics[best_idx], vectors[best_idx])
+
+    def select_from_candidates(
+        self,
+        candidate_topics: Sequence[str],
+        features: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Tuple[int, str]]:
+        """Tuple-returning variant of ``select_with_context``."""
+        selection = self.select_with_context(candidate_topics, features)
+        if selection is None:
+            return None
+        return selection.topic_idx, selection.topic
 
     def select_topic(self, context: str = "", features: Optional[Dict[str, Any]] = None) -> Tuple[int, str]:
         """LinUCB selection over the full topic list."""
@@ -125,16 +153,15 @@ class TopicBandit:
         vector[idx] = 1.0  # bias
         idx += 1
 
-        context_text = str(feature_payload.get('context_text', '') or '')
-        context_lower = context_text.lower()
-        user_text = str(feature_payload.get('user_input', '') or '').lower()
-        topic_keyword = self.topics[topic_idx].lower()
-        if topic_keyword and topic_keyword in user_text:
-            vector[idx] = 1.0
-        elif topic_keyword and topic_keyword in context_lower:
-            vector[idx] = 0.5
-        else:
-            vector[idx] = 0.0
+        # How strongly the planner's keyword/emotion heuristics favour this
+        # topic for the current utterance.
+        heuristic_scores = feature_payload.get('heuristic_scores')
+        raw_score = 0.0
+        if isinstance(heuristic_scores, dict):
+            candidate = heuristic_scores.get(self.topics[topic_idx])
+            if isinstance(candidate, (int, float)):
+                raw_score = float(candidate)
+        vector[idx] = min(max(raw_score, 0.0) / HEURISTIC_SCORE_SCALE, 1.0)
         idx += 1
 
         total = max(float(self.total_selections), 1.0)
@@ -216,21 +243,29 @@ class TopicBandit:
 
         return penalty
 
-    def update(self, topic_idx: int, reward: float, features: Optional[Dict[str, Any]] = None):
-        """LinUCB パラメータの更新"""
+    def update(
+        self,
+        topic_idx: int,
+        reward: float,
+        features: Optional[Dict[str, Any]] = None,
+        context: Optional[np.ndarray] = None,
+    ):
+        """LinUCB パラメータの更新
+
+        Pass ``context`` from a ``BanditSelection`` whenever possible;
+        ``features`` recomputes the vector from the current bandit state.
+        """
         if topic_idx < 0 or topic_idx >= self.n_topics:
             logger.warning("TopicBandit.update: invalid topic index %s", topic_idx)
             return
 
-        if features is None:
-            features = self._last_features.get(topic_idx)
-            if features is None:
-                features = {"context_text": self._last_contexts.get(topic_idx, "")}
+        if context is not None:
+            x = np.asarray(context, dtype=float)
+            if x.shape != (self.feature_dim,):
+                logger.warning("TopicBandit.update: context has shape %s, expected (%s,)", x.shape, self.feature_dim)
+                return
         else:
-            features = dict(features)
-            features.setdefault("context_text", self._last_contexts.get(topic_idx, ""))
-
-        x = self._get_feature_vector(topic_idx, features)
+            x = self._get_feature_vector(topic_idx, dict(features or {}))
         A = self.A_matrices[topic_idx]
         b = self.b_vectors[topic_idx]
 
@@ -281,12 +316,77 @@ class TopicBandit:
         if len(self.conversation_history) > self.max_history:
             del self.conversation_history[: len(self.conversation_history) - self.max_history]
 
-    def record_topic_selection(self, topic: str) -> Optional[int]:
-        """Record a topic choice when selection is handled outside LinUCB."""
+    def record_topic_selection(
+        self,
+        topic: str,
+        features: Optional[Dict[str, Any]] = None,
+    ) -> Optional[BanditSelection]:
+        """Record a topic choice made outside LinUCB (e.g. a forced continuation)."""
         if topic not in self.topics:
             logger.debug("TopicBandit.record_topic_selection: unknown topic %s", topic)
             return None
 
         topic_idx = self.topics.index(topic)
+        context = self._get_feature_vector(topic_idx, dict(features or {}))
         self._record_selection(topic_idx)
-        return topic_idx
+        return BanditSelection(topic_idx, topic, context)
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+    def to_state(self) -> Dict[str, Any]:
+        """Serialise learned parameters to a JSON-friendly dict."""
+        return {
+            'version': STATE_VERSION,
+            'feature_dim': self.feature_dim,
+            'topics': {
+                topic: {
+                    'A': self.A_matrices[i].tolist(),
+                    'b': self.b_vectors[i].tolist(),
+                    'value': float(self.values[i]),
+                    'count': float(self.counts[i]),
+                    'frequency': float(self.topic_frequency[i]),
+                }
+                for i, topic in enumerate(self.topics)
+            },
+        }
+
+    def load_state(self, state: Dict[str, Any]) -> int:
+        """Restore parameters saved by ``to_state``; returns topics restored.
+
+        Topics are matched by name, so adding or removing topic families
+        keeps whatever still lines up. Incompatible states are ignored.
+        """
+        if not isinstance(state, dict) or state.get('version') != STATE_VERSION:
+            logger.warning("TopicBandit.load_state: unsupported state version")
+            return 0
+        if state.get('feature_dim') != self.feature_dim:
+            logger.warning("TopicBandit.load_state: feature_dim mismatch; starting fresh")
+            return 0
+
+        restored = 0
+        saved_topics = state.get('topics') or {}
+        for i, topic in enumerate(self.topics):
+            saved = saved_topics.get(topic)
+            if not isinstance(saved, dict):
+                continue
+            try:
+                A = np.asarray(saved['A'], dtype=float)
+                b = np.asarray(saved['b'], dtype=float)
+                if A.shape != (self.feature_dim, self.feature_dim) or b.shape != (self.feature_dim,):
+                    continue
+                A_inv = np.linalg.inv(A)
+            except (KeyError, TypeError, ValueError, np.linalg.LinAlgError):
+                logger.warning("TopicBandit.load_state: skipping corrupt entry for %s", topic)
+                continue
+            self.A_matrices[i] = A
+            self.A_inv_matrices[i] = A_inv
+            self.b_vectors[i] = b
+            self.values[i] = float(saved.get('value', 0.0))
+            self.counts[i] = float(saved.get('count', 0.0))
+            self.topic_frequency[i] = float(saved.get('frequency', 0.0))
+            restored += 1
+
+        if restored:
+            self.total_selections = int(self.topic_frequency.sum())
+        return restored

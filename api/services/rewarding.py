@@ -31,6 +31,41 @@ POSITIVE_REPLY_MARKERS = (
 )
 COMPANION_MARKERS = ("一緒", "そば", "ゆっくり", "少し", "自然", "大丈夫")
 
+# Signals in the user's *next* message about how the previous reply landed.
+DISMISSAL_MARKERS = (
+    "別の話",
+    "話変え",
+    "話を変え",
+    "もういい",
+    "どうでもいい",
+    "つまらな",
+    "興味ない",
+    "そういうことじゃな",
+    "そうじゃなくて",
+    "違うって",
+    "聞いてない",
+)
+ENGAGED_MARKERS = (
+    "そうそう",
+    "わかる",
+    "分かる",
+    "たしかに",
+    "確かに",
+    "それな",
+    "なるほど",
+    "ありがとう",
+    "その続き",
+    "それで",
+    "そのあと",
+    "ちなみに",
+)
+MINIMAL_REPLIES = {"うん", "へー", "へえ", "ふーん", "そう", "はい", "そっか", "ok", "了解", "りょ"}
+_MINIMAL_TRAILING = "。.!！?？〜~ーｗw…"
+
+# How much of a turn's learned reward comes from the user's reaction versus
+# the self-assessed reply quality.
+ENGAGEMENT_WEIGHT = 0.65
+
 
 def calculate_response_reward(
     *,
@@ -94,6 +129,52 @@ def calculate_response_reward(
         reward += 0.02
 
     return round(max(0.0, min(1.0, reward)), 3)
+
+
+def calculate_engagement_reward(
+    *,
+    next_user_text: str,
+    previous_user_emotion: Optional[Dict[str, Any]] = None,
+    next_user_emotion: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Estimate 0..1 from how the user reacted to the previous reply.
+
+    This is the signal the topic bandit should really optimise: whether the
+    user kept talking, pushed back, or felt better afterwards.
+    """
+
+    text = _normalise_text(next_user_text).strip()
+    if not text:
+        return 0.3
+
+    reward = 0.5
+    if any(marker in text for marker in DISMISSAL_MARKERS):
+        reward -= 0.35
+    if any(marker in text for marker in ENGAGED_MARKERS):
+        reward += 0.2
+
+    core = text.rstrip(_MINIMAL_TRAILING)
+    if core in MINIMAL_REPLIES or len(core) <= 2:
+        reward -= 0.15
+    elif len(text) >= 20:
+        reward += 0.1
+
+    previous_label = _extract_primary_emotion(previous_user_emotion)
+    next_label = _extract_primary_emotion(next_user_emotion)
+    if previous_label in NEGATIVE_EMOTIONS and next_label not in NEGATIVE_EMOTIONS:
+        reward += 0.1
+    elif previous_label not in NEGATIVE_EMOTIONS and next_label in NEGATIVE_EMOTIONS:
+        reward -= 0.1
+    elif next_label in POSITIVE_EMOTIONS:
+        reward += 0.05
+
+    return round(max(0.0, min(1.0, reward)), 3)
+
+
+def blend_turn_reward(response_reward: float, engagement_reward: float) -> float:
+    """Combine reply quality and user reaction into one bandit reward."""
+    blended = (1.0 - ENGAGEMENT_WEIGHT) * response_reward + ENGAGEMENT_WEIGHT * engagement_reward
+    return round(max(0.0, min(1.0, blended)), 3)
 
 
 def _extract_primary_emotion(emotion_payload: Optional[Dict[str, Any]]) -> str:

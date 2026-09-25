@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -223,6 +223,8 @@ class ConversationPlan:
     boundary_mode: str
     push_intensity: str
     quiet_hours: bool
+    # Heuristic score per topic family; used as bandit features, not prompted.
+    topic_scores: Dict[str, float] = field(default_factory=dict)
 
     def to_prompt_payload(self) -> Dict[str, Any]:
         return {
@@ -350,6 +352,7 @@ class ConversationPlanner:
             boundary_mode="sensitive" if sensitive_mode else "standard",
             push_intensity=push_intensity,
             quiet_hours=quiet_hours,
+            topic_scores=dict(scores),
         )
 
     def _extract_recent_topics(self, recent_history: Sequence[Dict[str, Any]] | None) -> List[str]:

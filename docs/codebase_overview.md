@@ -28,7 +28,14 @@
   - `speech.py` は TTS（VOICEVOX）と音声認識をチャットから分離したサービスです。
   - `rituals.py`, `memory.py`, `mood.py`, `agent_requests.py`, `album.py`, `consent.py` は比較的分離されています。
 - `api/topic_bandit.py`
-  - LinUCB バンディット。プランナーが絞った候補から `select_from_candidates` で選択し、ターンごとの報酬で更新されます（学習が実際に選択へ反映されます）。
+  - LinUCB バンディット。プランナーが絞った候補から `select_with_context` で選択し、選択時の特徴量ベクトルをそのまま更新に使います。
+  - 特徴量にはプランナーのトピック別ヒューリスティックスコアを含みます。
+  - 学習状態は `data/bandit_state.json`（`RECOMATE_BANDIT_STATE_PATH` で変更、`off` で無効）に保存され、再起動後も引き継がれます。
+- 学習ループ（2026-09-26〜）
+  - バンディットの報酬はターン直後ではなく、ユーザーの反応が分かった時点で確定します。
+  - 次のユーザー発話（30分以内）: 応答品質スコア35% + 反応スコア65%（`calculate_engagement_reward`）。
+  - 明示フィードバック: `POST /api/chat/feedback`（👍=1.0 / 👎=0.0、1ターン1回）。好みプロファイルにも反映。
+  - 同意設定の `learning_paused` が有効なら、バンディット学習もフィードバック反映も行いません。
 - `api/db/`
   - SQLAlchemy モデル、接続設定、Alembic マイグレーション。
 
@@ -57,6 +64,7 @@
 ## 実装済みの主な機能
 
 - 会話 API: `/api/chat`
+- 会話フィードバック: `/api/chat/feedback`
 - 音声合成: `/api/text-to-speech`
 - 音声文字起こし: `/api/transcribe`
 - トピック統計: `/api/topics/stats`

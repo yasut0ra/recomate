@@ -13,11 +13,17 @@ def build_chat_history_entry(
     assistant_emotion: Optional[Dict[str, Any]] = None,
     reward: Optional[float] = None,
     timestamp: Optional[float] = None,
+    turn_id: Optional[str] = None,
+    topic: Optional[str] = None,
 ) -> Dict[str, Any]:
     entry: Dict[str, Any] = {
         "user_input": user_input,
         "response": response,
     }
+    if turn_id is not None:
+        entry["turn_id"] = turn_id
+    if topic is not None:
+        entry["topic"] = topic
     if user_emotion is not None:
         entry["user_emotion"] = user_emotion
     if assistant_emotion is not None:

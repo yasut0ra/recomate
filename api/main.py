@@ -23,10 +23,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import uvicorn
 
-from .chat_engine import ChatEngine, ChatTurnResult
+from .chat_engine import ChatEngine, ChatTurnResult, UnknownTurnError
 from .db.session import get_session
 from .routers.features import router as features_router
-from .schemas import AudioInput, TextInput, TranscriptionResponse
+from .schemas import (
+    AudioInput,
+    ChatFeedbackRequest,
+    ChatFeedbackResponse,
+    TextInput,
+    TranscriptionResponse,
+)
 from .services.chat_payloads import build_chat_response_payload
 from .services.speech import SpeechService
 
@@ -154,6 +160,23 @@ def chat(input_data: TextInput):
         logger.exception("Chat turn failed")
         raise HTTPException(status_code=500, detail="Failed to generate a response")
     return _turn_payload(result)
+
+
+@app.post("/api/chat/feedback", response_model=ChatFeedbackResponse)
+def chat_feedback(input_data: ChatFeedbackRequest):
+    active_engine = _require_engine()
+    try:
+        result = active_engine.apply_feedback(
+            input_data.turn_id,
+            like=input_data.like,
+            user_id=input_data.user_id,
+        )
+    except UnknownTurnError:
+        raise HTTPException(status_code=404, detail="Unknown or expired turn")
+    except Exception:
+        logger.exception("Chat feedback failed")
+        raise HTTPException(status_code=500, detail="Failed to apply feedback")
+    return ChatFeedbackResponse(**result)
 
 
 @app.post("/api/analyze-emotion")

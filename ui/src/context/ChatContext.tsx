@@ -6,7 +6,7 @@ import React, {
   useEffect,
 } from 'react';
 import type { ReactNode } from 'react';
-import { fetchTopicStats, postChatMessage } from '../api/chatApi';
+import { fetchTopicStats, postChatFeedback, postChatMessage } from '../api/chatApi';
 import { requestSpeechSynthesis, requestTranscription } from '../api/audioApi';
 import { ChatContext } from './chat-context';
 import type {
@@ -308,6 +308,9 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         timestamp: new Date().toISOString(),
         emotion: assistantEmotion,
         reward: typeof apiResponse.reward === 'number' ? apiResponse.reward : undefined,
+        turnId: apiResponse.turn_metadata?.turn_id,
+        topic: apiResponse.turn_metadata?.topic ?? undefined,
+        feedbackEnabled: apiResponse.turn_metadata?.feedback_enabled ?? false,
       };
 
       // Local messages are the source of truth for this window; the server
@@ -333,9 +336,32 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [apiKey, userId, playAssistantSpeech, voiceEnabled]);
 
+  const sendFeedback = useCallback(async (messageId: string, like: boolean) => {
+    const target = messages.find(message => message.id === messageId);
+    if (!target?.turnId || target.feedback) {
+      return;
+    }
+    const rating = like ? 'like' : 'dislike';
+    const applyRating = (value: ChatMessage['feedback']) => {
+      setMessages(prev => prev.map(message => (
+        message.id === messageId ? { ...message, feedback: value } : message
+      )));
+    };
+
+    // Optimistic: the server accepts only one rating per turn anyway.
+    applyRating(rating);
+    try {
+      await postChatFeedback(target.turnId, like, { userId });
+    } catch (err) {
+      console.warn('Failed to send chat feedback', err);
+      applyRating(undefined);
+    }
+  }, [messages, userId]);
+
   const value = useMemo(() => ({
     messages,
     sendMessage,
+    sendFeedback,
     isProcessing,
     error,
     characterEmotion,
@@ -356,6 +382,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }), [
     messages,
     sendMessage,
+    sendFeedback,
     isProcessing,
     error,
     characterEmotion,
