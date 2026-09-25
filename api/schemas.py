@@ -15,6 +15,20 @@ class TextInput(BaseModel):
     user_id: Optional[UUID] = None
 
 
+class ChatFeedbackRequest(BaseModel):
+    turn_id: str = Field(..., min_length=1)
+    like: bool
+    user_id: Optional[UUID] = None
+
+
+class ChatFeedbackResponse(BaseModel):
+    turn_id: str
+    topic: str
+    applied: bool
+    reward: Optional[float] = None
+    reason: Optional[Literal["already_rated", "not_learnable", "learning_paused"]] = None
+
+
 class AudioInput(BaseModel):
     audio_data: List[float]
     sample_rate: int = Field(..., gt=0)

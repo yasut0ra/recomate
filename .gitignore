@@ -62,5 +62,6 @@ var/
 voice_cache/
 
 # Local artifacts
+data/
 .cache/
 .eslintcache

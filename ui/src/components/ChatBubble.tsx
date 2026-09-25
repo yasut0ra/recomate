@@ -1,5 +1,5 @@
 import React from 'react';
-import { Volume2 } from 'lucide-react';
+import { ThumbsDown, ThumbsUp, Volume2 } from 'lucide-react';
 import type { ChatMessage } from '../types';
 import { useChatContext } from '../context/useChatContext';
 
@@ -8,7 +8,7 @@ interface ChatBubbleProps {
 }
 
 const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
-  const { voiceEnabled, playAssistantSpeech } = useChatContext();
+  const { voiceEnabled, playAssistantSpeech, sendFeedback } = useChatContext();
   const isUser = message.sender === 'user';
   const formattedTime = new Date(message.timestamp).toLocaleTimeString('ja-JP', {
     hour: '2-digit',
@@ -43,10 +43,57 @@ const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
           )}
         </div>
         <p className="text-sm sm:text-base whitespace-pre-line">{message.text}</p>
-        {!isUser && message.emotion && (
-          <span className="mt-2 inline-block text-xs px-2 py-1 rounded-full bg-white/40 text-purple-700">
-            感情: {message.emotion}
-          </span>
+        {!isUser && (message.emotion || message.topic || message.feedbackEnabled) && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {message.emotion && (
+              <span className="text-xs px-2 py-1 rounded-full bg-white/40 text-purple-700">
+                感情: {message.emotion}
+              </span>
+            )}
+            {message.topic && (
+              <span className="text-xs px-2 py-1 rounded-full bg-white/40 text-purple-700">
+                話題: {message.topic}
+              </span>
+            )}
+            {message.feedbackEnabled && (
+              <div className="ml-auto flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void sendFeedback(message.id, true);
+                  }}
+                  disabled={Boolean(message.feedback)}
+                  className={
+                    'p-1 rounded-full transition-colors disabled:cursor-default ' +
+                    (message.feedback === 'like'
+                      ? 'text-pink-600 bg-white/60'
+                      : 'text-purple-400 hover:text-purple-700 disabled:opacity-40')
+                  }
+                  aria-label="この返事が良かった"
+                  aria-pressed={message.feedback === 'like'}
+                >
+                  <ThumbsUp size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void sendFeedback(message.id, false);
+                  }}
+                  disabled={Boolean(message.feedback)}
+                  className={
+                    'p-1 rounded-full transition-colors disabled:cursor-default ' +
+                    (message.feedback === 'dislike'
+                      ? 'text-pink-600 bg-white/60'
+                      : 'text-purple-400 hover:text-purple-700 disabled:opacity-40')
+                  }
+                  aria-label="この返事はいまいちだった"
+                  aria-pressed={message.feedback === 'dislike'}
+                >
+                  <ThumbsDown size={14} />
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

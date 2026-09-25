@@ -14,11 +14,13 @@ import logging
 import os
 import random
 import threading
-from collections import deque
+import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
@@ -32,11 +34,11 @@ from .services.conversation_planner import ConversationPlan, ConversationPlanner
 from .services.episodes import build_episode_tags, build_recent_episode_context, record_episode
 from .services.memory import build_memory_context, promote_episode_to_memory_if_relevant
 from .services.mood import get_recent_moods
-from .services.preferences import get_preference_profile
-from .services.rewarding import calculate_response_reward
+from .services.preferences import apply_preference_feedback, get_preference_profile
+from .services.rewarding import blend_turn_reward, calculate_engagement_reward, calculate_response_reward
 from .services.text_cleanup import clean_assistant_response
 from .services.users import resolve_local_user
-from .topic_bandit import TopicBandit
+from .topic_bandit import BanditSelection, TopicBandit
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,11 @@ SYSTEM_PROMPT = (
 DEFAULT_USER_KEY = "local"
 MAX_SESSION_HISTORY = 50
 PROMPT_HISTORY_LIMIT = 3
+# A reply arriving later than this is a new conversation, not a reaction.
+IMPLICIT_FEEDBACK_WINDOW_SECONDS = 30 * 60
+
+BANDIT_STATE_ENV = 'RECOMATE_BANDIT_STATE_PATH'
+DEFAULT_BANDIT_STATE_PATH = Path(__file__).resolve().parent.parent / 'data' / 'bandit_state.json'
 
 FALLBACK_PATTERNS: Dict[str, List[str]] = {
     'happy': [
@@ -108,11 +115,34 @@ class ChatTurnResult:
     used_fallback: bool = False
 
 
+class UnknownTurnError(LookupError):
+    """Raised when feedback targets a turn this process does not know."""
+
+
+@dataclass
+class _TurnLearning:
+    """Bandit bookkeeping for one turn until the user's reaction is known.
+
+    The bandit is updated once the next user message arrives (implicit
+    engagement) and again on explicit 👍/👎, always with the context vector
+    captured at selection time.
+    """
+
+    selection: BanditSelection
+    response_reward: float
+    user_emotion: Optional[Dict[str, Any]]
+    created_at: float
+    learnable: bool
+    resolved: bool = False
+    feedback: Optional[bool] = None
+
+
 @dataclass
 class _UserSession:
     """In-memory per-user conversation state."""
 
     history: deque = field(default_factory=lambda: deque(maxlen=MAX_SESSION_HISTORY))
+    turns: 'OrderedDict[str, _TurnLearning]' = field(default_factory=OrderedDict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -130,6 +160,8 @@ class ChatEngine:
         self.topics = self.conversation_planner.topic_families
         self.bandit = TopicBandit(self.topics)
         self._bandit_lock = threading.Lock()
+        self._bandit_state_path = self._resolve_bandit_state_path()
+        self._load_bandit_state()
 
         self._sessions: Dict[str, _UserSession] = {}
         self._sessions_lock = threading.Lock()
@@ -206,6 +238,126 @@ class ChatEngine:
     def topic_summary(self) -> Dict[str, Any]:
         with self._bandit_lock:
             return self.bandit.get_summary()
+
+    # ------------------------------------------------------------------
+    # Bandit learning & persistence
+    # ------------------------------------------------------------------
+    def _resolve_bandit_state_path(self) -> Optional[Path]:
+        raw = os.getenv(BANDIT_STATE_ENV)
+        if raw is None:
+            return DEFAULT_BANDIT_STATE_PATH
+        raw = raw.strip()
+        if not raw or raw.lower() in {'off', 'none', 'false', '0'}:
+            return None
+        return Path(raw).expanduser()
+
+    def _load_bandit_state(self) -> None:
+        path = self._bandit_state_path
+        if path is None or not path.exists():
+            return
+        try:
+            state = json.loads(path.read_text(encoding='utf-8'))
+            restored = self.bandit.load_state(state)
+            logger.info('Restored topic bandit state for %d topics from %s', restored, path)
+        except Exception as exc:
+            logger.warning('Failed to load topic bandit state from %s: %s', path, exc)
+
+    def _save_bandit_state_locked(self) -> None:
+        """Persist bandit parameters; caller must hold ``_bandit_lock``."""
+        path = self._bandit_state_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_name(path.name + '.tmp')
+            tmp_path.write_text(json.dumps(self.bandit.to_state()), encoding='utf-8')
+            os.replace(tmp_path, path)
+        except OSError as exc:
+            logger.warning('Failed to save topic bandit state to %s: %s', path, exc)
+
+    def _learn(self, learning: _TurnLearning, reward: float) -> None:
+        with self._bandit_lock:
+            self.bandit.update(learning.selection.topic_idx, reward, context=learning.selection.context)
+            self._save_bandit_state_locked()
+
+    def _resolve_previous_turn(
+        self,
+        session: _UserSession,
+        *,
+        next_text: str,
+        next_emotion: Optional[Dict[str, Any]],
+        learning_allowed: bool,
+    ) -> None:
+        """Reward the previous turn's topic by how the user just reacted."""
+        with session.lock:
+            if not session.turns:
+                return
+            learning = next(reversed(session.turns.values()))
+            if learning.resolved or not learning.learnable:
+                return
+            learning.resolved = True
+        if not learning_allowed:
+            return
+
+        if time.time() - learning.created_at > IMPLICIT_FEEDBACK_WINDOW_SECONDS:
+            reward = learning.response_reward
+        else:
+            engagement = calculate_engagement_reward(
+                next_user_text=next_text,
+                previous_user_emotion=learning.user_emotion,
+                next_user_emotion=next_emotion,
+            )
+            reward = blend_turn_reward(learning.response_reward, engagement)
+        self._learn(learning, reward)
+
+    def _sync_feedback_to_profile(self, user_id: Optional[UUID], like: bool) -> bool:
+        """Mirror feedback into stored preferences; False if learning is paused."""
+        session = None
+        try:
+            session = get_session()
+            user = resolve_local_user(session, user_id)
+            if get_consent_setting(session, user.id).learning_paused:
+                return False
+            apply_preference_feedback(session, user.id, like=like)
+        except Exception as exc:
+            logger.debug('Preference feedback not persisted: %s', exc)
+        finally:
+            if session is not None:
+                session.close()
+        return True
+
+    def apply_feedback(self, turn_id: str, like: bool, user_id: Optional[UUID] = None) -> Dict[str, Any]:
+        """Apply explicit 👍/👎 on a turn to the topic bandit and preferences."""
+        session = self._session_for(user_id, create=False)
+        if session is None:
+            raise UnknownTurnError(turn_id)
+        with session.lock:
+            learning = session.turns.get(turn_id)
+            if learning is None:
+                raise UnknownTurnError(turn_id)
+            already_rated = learning.feedback is not None
+            if not already_rated:
+                learning.feedback = like
+                learning.resolved = True
+
+        result: Dict[str, Any] = {
+            'turn_id': turn_id,
+            'topic': learning.selection.topic,
+            'applied': False,
+            'reward': None,
+            'reason': None,
+        }
+        if already_rated:
+            result['reason'] = 'already_rated'
+        elif not learning.learnable:
+            result['reason'] = 'not_learnable'
+        elif not self._sync_feedback_to_profile(user_id, like):
+            result['reason'] = 'learning_paused'
+        else:
+            reward = 1.0 if like else 0.0
+            self._learn(learning, reward)
+            result.update(applied=True, reward=reward)
+        return result
 
     # ------------------------------------------------------------------
     # Runtime context
@@ -468,31 +620,39 @@ class ChatEngine:
         session = self._session_for(user_id)
         assert session is not None
 
+        consent = runtime_context.get('consent') or {}
+        learning_allowed = not bool(consent.get('learning_paused'))
+
+        self._resolve_previous_turn(
+            session,
+            next_text=text,
+            next_emotion=emotion_payload,
+            learning_allowed=learning_allowed,
+        )
+
         with session.lock:
             session_pairs = list(session.history)
 
         persisted_history = runtime_context.get('recent_episode_context')
         if not isinstance(persisted_history, list):
             persisted_history = []
-        recent_history = list(persisted_history)[-2:] + session_pairs[-3:]
+        # Session entries carry their topic in true turn order; persisted
+        # episodes are relevance-ranked, so only use them after a restart.
+        recent_history = session_pairs[-4:] if session_pairs else list(persisted_history)[-4:]
 
-        bandit_features = {
+        bandit_features: Dict[str, Any] = {
             'user_input': text,
             'context_text': text,
             'emotion': emotion_payload or {},
         }
-        selected_topic_idx: Optional[int] = None
+        selection: Optional[BanditSelection] = None
 
         def bandit_selector(candidates: List[Tuple[str, float]]) -> Optional[str]:
-            nonlocal selected_topic_idx
+            nonlocal selection
+            features = dict(bandit_features, heuristic_scores=dict(candidates))
             with self._bandit_lock:
-                selected = self.bandit.select_from_candidates(
-                    [topic for topic, _ in candidates], bandit_features
-                )
-            if selected is None:
-                return None
-            selected_topic_idx, topic = selected
-            return topic
+                selection = self.bandit.select_with_context([topic for topic, _ in candidates], features)
+            return selection.topic if selection is not None else None
 
         plan = self.conversation_planner.plan(
             user_text=text,
@@ -503,9 +663,10 @@ class ChatEngine:
             local_hour=runtime_context.get('local_hour'),
             topic_selector=bandit_selector,
         )
-        if selected_topic_idx is None:
+        if selection is None or selection.topic != plan.topic_family:
+            features = dict(bandit_features, heuristic_scores=plan.topic_scores)
             with self._bandit_lock:
-                selected_topic_idx = self.bandit.record_topic_selection(plan.topic_family)
+                selection = self.bandit.record_topic_selection(plan.topic_family, features)
 
         messages: List[Dict[str, str]] = [{'role': 'system', 'content': self.system_prompt}]
         messages.extend(self._build_message_history(session_pairs, persisted_history))
@@ -534,21 +695,25 @@ class ChatEngine:
         )
 
         # Fallback responses are canned text; letting them train the bandit
-        # would reward topics for words the model never chose.
-        if not used_fallback and selected_topic_idx is not None:
+        # would reward topics for words the model never chose. Learning is
+        # deferred until the user reacts (next message or 👍/👎).
+        learnable = not used_fallback and learning_allowed
+        if learnable:
             with self._bandit_lock:
                 self.bandit.add_to_history(text, response_text, plan.topic_family, reward=reward)
-                self.bandit.update(
-                    selected_topic_idx,
-                    reward,
-                    features={
-                        'user_input': text,
-                        'context_text': response_text,
-                        'emotion': emotion_payload or {},
-                    },
-                )
 
+        turn_id = uuid4().hex
         with session.lock:
+            if selection is not None:
+                session.turns[turn_id] = _TurnLearning(
+                    selection=selection,
+                    response_reward=reward,
+                    user_emotion=emotion_payload,
+                    created_at=time.time(),
+                    learnable=learnable,
+                )
+                while len(session.turns) > MAX_SESSION_HISTORY:
+                    session.turns.popitem(last=False)
             session.history.append(
                 build_chat_history_entry(
                     user_input=text,
@@ -557,11 +722,13 @@ class ChatEngine:
                     assistant_emotion=assistant_emotion,
                     reward=reward,
                     timestamp=datetime.now().timestamp(),
+                    turn_id=turn_id,
+                    topic=plan.topic_family,
                 )
             )
             history = list(session.history)
 
-        turn_metadata = self._persist_turn(
+        persisted = self._persist_turn(
             user_text=text,
             response_text=response_text,
             emotion=emotion,
@@ -570,6 +737,12 @@ class ChatEngine:
             topic_family=plan.topic_family,
             allow_memory_promotion=not used_fallback,
         )
+        turn_metadata = {
+            **persisted,
+            'turn_id': turn_id,
+            'topic': plan.topic_family,
+            'feedback_enabled': learnable,
+        }
 
         return ChatTurnResult(
             response=response_text,
