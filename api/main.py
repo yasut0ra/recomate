@@ -183,7 +183,7 @@ def chat_feedback(input_data: ChatFeedbackRequest):
 def analyze_emotion(input_data: TextInput):
     active_engine = _require_engine()
     try:
-        return {"emotion": active_engine.analyze_emotion_label(input_data.text)}
+        return {"emotion": active_engine.analyze_emotion_label(input_data.text, api_key=input_data.api_key)}
     except Exception:
         logger.exception("Emotion analysis failed")
         raise HTTPException(status_code=500, detail="Failed to analyze emotion")

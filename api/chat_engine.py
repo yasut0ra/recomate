@@ -35,10 +35,11 @@ from .services.episodes import build_episode_tags, build_recent_episode_context,
 from .services.memory import build_memory_context, promote_episode_to_memory_if_relevant
 from .services.mood import get_recent_moods
 from .services.preferences import apply_preference_feedback, get_preference_profile
-from .services.rewarding import blend_turn_reward, calculate_engagement_reward, calculate_response_reward
+from .services.rewarding import blend_turn_reward, calculate_response_reward
 from .services.text_cleanup import clean_assistant_response
 from .services.users import resolve_local_user
 from .topic_bandit import BanditSelection, TopicBandit
+from .turn_analyzer import EMOTION_LABELS, TurnAnalyzer, expression_payload
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,49 @@ RESPONSE_GUIDELINES = [
 ]
 
 
+# The reply and the face to show while saying it come from one generation
+# call, so the assistant's emotion needs no separate analysis request.
+REPLY_RESPONSE_FORMAT: Dict[str, Any] = {
+    'type': 'json_schema',
+    'json_schema': {
+        'name': 'companion_reply',
+        'strict': True,
+        'schema': {
+            'type': 'object',
+            'additionalProperties': False,
+            'required': ['reply', 'expression'],
+            'properties': {
+                'reply': {'type': 'string'},
+                'expression': {'type': 'string', 'enum': list(EMOTION_LABELS)},
+            },
+        },
+    },
+}
+
+
+@dataclass
+class GeneratedReply:
+    """Reply text plus the expression the model chose, if it gave a valid one."""
+
+    text: str
+    expression: Optional[str] = None
+
+
+def parse_generated_reply(content: str) -> GeneratedReply:
+    """Read the structured reply; tolerate plain text from non-conforming models."""
+    try:
+        data = json.loads(content)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict) and isinstance(data.get('reply'), str):
+        expression = data.get('expression')
+        return GeneratedReply(
+            text=clean_assistant_response(data['reply']),
+            expression=expression if expression in EMOTION_LABELS else None,
+        )
+    return GeneratedReply(text=clean_assistant_response(content or ''))
+
+
 @dataclass
 class ChatTurnResult:
     """Everything a caller needs to build a chat response payload."""
@@ -130,7 +174,8 @@ class _TurnLearning:
 
     selection: BanditSelection
     response_reward: float
-    user_emotion: Optional[Dict[str, Any]]
+    user_text: str
+    response_text: str
     created_at: float
     learnable: bool
     resolved: bool = False
@@ -156,6 +201,7 @@ class ChatEngine:
         self.chat_fallback_model = (os.getenv('OPENAI_FALLBACK_CHAT_MODEL') or '').strip() or 'gpt-4o-mini'
 
         self.emotion_analyzer = EmotionAnalyzer()
+        self.turn_analyzer = TurnAnalyzer(self.emotion_analyzer)
         self.conversation_planner = ConversationPlanner()
         self.topics = self.conversation_planner.topic_families
         self.bandit = TopicBandit(self.topics)
@@ -229,8 +275,8 @@ class ChatEngine:
                 return candidate.lower()
         return 'neutral'
 
-    def analyze_emotion_label(self, text: str) -> str:
-        return self.emotion_label(self.emotion_analyzer.analyze_emotion(text))
+    def analyze_emotion_label(self, text: str, api_key: Optional[str] = None) -> str:
+        return self.emotion_label(self.turn_analyzer.analyze_text(self._resolve_client(api_key), text))
 
     # ------------------------------------------------------------------
     # Topic stats
@@ -280,33 +326,32 @@ class ChatEngine:
             self.bandit.update(learning.selection.topic_idx, reward, context=learning.selection.context)
             self._save_bandit_state_locked()
 
+    def _turn_awaiting_reaction(self, session: _UserSession) -> Optional[_TurnLearning]:
+        """The previous turn, if it still needs an implicit reaction reward."""
+        with session.lock:
+            learning = next(reversed(session.turns.values()), None)
+        if learning is None or learning.resolved or not learning.learnable:
+            return None
+        return learning
+
     def _resolve_previous_turn(
         self,
         session: _UserSession,
-        *,
-        next_text: str,
-        next_emotion: Optional[Dict[str, Any]],
-        learning_allowed: bool,
+        learning: _TurnLearning,
+        engagement: Optional[float],
     ) -> None:
-        """Reward the previous turn's topic by how the user just reacted."""
+        """Reward the previous turn's topic by how the user just reacted.
+
+        ``engagement`` is None when the reply came too late to count as a
+        reaction; the turn then learns from its reply quality alone.
+        """
         with session.lock:
-            if not session.turns:
-                return
-            learning = next(reversed(session.turns.values()))
-            if learning.resolved or not learning.learnable:
+            if learning.resolved:  # 👍/👎 arrived in the meantime
                 return
             learning.resolved = True
-        if not learning_allowed:
-            return
-
-        if time.time() - learning.created_at > IMPLICIT_FEEDBACK_WINDOW_SECONDS:
+        if engagement is None:
             reward = learning.response_reward
         else:
-            engagement = calculate_engagement_reward(
-                next_user_text=next_text,
-                previous_user_emotion=learning.user_emotion,
-                next_user_emotion=next_emotion,
-            )
             reward = blend_turn_reward(learning.response_reward, engagement)
         self._learn(learning, reward)
 
@@ -500,7 +545,9 @@ class ChatEngine:
         payload_text = json.dumps(payload, ensure_ascii=False, default=str)
         return (
             'Generate one natural Japanese companion reply for RecoMate. '
-            'Use the conversation plan to decide tone, continuity, and whether to ask a follow-up.\n'
+            'Use the conversation plan to decide tone, continuity, and whether to ask a follow-up. '
+            'Return JSON: `reply` is the reply text only; `expression` is the face RecoMate shows '
+            'while saying it (happy, sad, angry, surprised, or neutral).\n'
             + payload_text
         )
 
@@ -511,24 +558,27 @@ class ChatEngine:
         models = [self.chat_model, self.chat_fallback_model]
         return [model for index, model in enumerate(models) if model and model not in models[:index]]
 
-    def _call_language_model(self, client: OpenAI, messages: List[Dict[str, str]]) -> str:
+    def _call_language_model(self, client: OpenAI, messages: List[Dict[str, str]]) -> GeneratedReply:
         if not messages:
             raise ValueError('No messages provided to the language model')
         last_error: Optional[Exception] = None
         for model in self._model_chain():
             try:
-                completion = client.chat.completions.create(model=model, messages=messages)
-                content = completion.choices[0].message.content or ''
-                cleaned = clean_assistant_response(content)
-                if cleaned:
-                    return cleaned
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    response_format=REPLY_RESPONSE_FORMAT,
+                )
+                reply = parse_generated_reply(completion.choices[0].message.content or '')
+                if reply.text:
+                    return reply
                 logger.warning('Model %s returned an empty response', model)
             except Exception as exc:
                 last_error = exc
                 logger.warning('Chat completion failed on model %s: %s', model, exc)
         if last_error is not None:
             raise last_error
-        return ''
+        return GeneratedReply(text='')
 
     def _fallback_response(self, emotion: str) -> str:
         patterns = FALLBACK_PATTERNS.get(emotion) or DEFAULT_FALLBACK_RESPONSES
@@ -614,8 +664,6 @@ class ChatEngine:
         api_key: Optional[str] = None,
     ) -> ChatTurnResult:
         client = self._resolve_client(api_key)
-        emotion_payload = self.emotion_analyzer.analyze_emotion(text)
-        emotion = self.emotion_label(emotion_payload)
         runtime_context = self._build_runtime_context(user_id, current_text=text)
         session = self._session_for(user_id)
         assert session is not None
@@ -623,12 +671,25 @@ class ChatEngine:
         consent = runtime_context.get('consent') or {}
         learning_allowed = not bool(consent.get('learning_paused'))
 
-        self._resolve_previous_turn(
-            session,
-            next_text=text,
-            next_emotion=emotion_payload,
-            learning_allowed=learning_allowed,
+        previous_turn = self._turn_awaiting_reaction(session) if learning_allowed else None
+        judge_reaction = (
+            previous_turn is not None
+            and time.time() - previous_turn.created_at <= IMPLICIT_FEEDBACK_WINDOW_SECONDS
         )
+        analysis = self.turn_analyzer.analyze_turn(
+            client,
+            user_text=text,
+            previous_user_text=previous_turn.user_text if judge_reaction else None,
+            previous_reply=previous_turn.response_text if judge_reaction else None,
+        )
+        emotion_payload = analysis.emotion
+        emotion = self.emotion_label(emotion_payload)
+        if previous_turn is not None:
+            self._resolve_previous_turn(
+                session,
+                previous_turn,
+                analysis.reaction_score if judge_reaction else None,
+            )
 
         with session.lock:
             session_pairs = list(session.history)
@@ -673,20 +734,25 @@ class ChatEngine:
         messages.append({'role': 'user', 'content': self._prepare_user_prompt(text, plan, emotion_payload, runtime_context)})
 
         used_fallback = False
-        response_text = ''
+        generated = GeneratedReply(text='')
         if client is None:
             used_fallback = True
         else:
             try:
-                response_text = self._call_language_model(client, messages)
+                generated = self._call_language_model(client, messages)
             except Exception as exc:
                 logger.error('LLM response generation failed: %s', exc)
                 used_fallback = True
+        response_text = generated.text
         if not response_text:
             used_fallback = True
             response_text = self._fallback_response(emotion)
 
-        assistant_emotion = self.emotion_analyzer.analyze_emotion(response_text)
+        if not used_fallback and generated.expression:
+            assistant_emotion = expression_payload(generated.expression)
+        else:
+            # Canned text, or a model that ignored the schema: keywords suffice.
+            assistant_emotion = self.turn_analyzer.analyze_text(None, response_text)
         reward = calculate_response_reward(
             user_text=text,
             response_text=response_text,
@@ -708,7 +774,8 @@ class ChatEngine:
                 session.turns[turn_id] = _TurnLearning(
                     selection=selection,
                     response_reward=reward,
-                    user_emotion=emotion_payload,
+                    user_text=text,
+                    response_text=response_text,
                     created_at=time.time(),
                     learnable=learnable,
                 )
@@ -743,6 +810,8 @@ class ChatEngine:
             'topic': plan.topic_family,
             'feedback_enabled': learnable,
         }
+        if analysis.reaction is not None:
+            turn_metadata['previous_turn_reaction'] = analysis.reaction
 
         return ChatTurnResult(
             response=response_text,
