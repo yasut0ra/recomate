@@ -72,6 +72,7 @@
    ```
 
    - OpenAI API キーは `.env` で `OPENAI_API_KEY` として指定するか、UI の設定モーダルから入力できます。
+   - 感情分析と「前の返答へのユーザーの反応」判定は、既定で小型 LLM（`OPENAI_ANALYSIS_MODEL`、既定 `gpt-4.1-nano`）を使います。API キーが無い・呼び出しに失敗した場合はキーワード判定に自動で戻ります。常にキーワード判定にしたい場合は `RECOMATE_EMOTION_ANALYZER=keyword` を設定してください。
    - 音声合成（VOICEVOX）を使用しない場合はデフォルトで無効です。有効化したい場合は `ENABLE_TTS=true` を環境変数に設定し、`api/requirements-optional.txt` も入れてください。
 
 3. 別ターミナルでフロントエンドを起動します。

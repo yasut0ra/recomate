@@ -13,10 +13,11 @@ from fastapi.testclient import TestClient
 
 import api.chat_engine
 import api.main
-from api.chat_engine import ChatEngine
+from api.chat_engine import ChatEngine, GeneratedReply
 from api.main import app
 
 FAKE_REPLY = "それは大変だったね。今日はゆっくり休んでいいと思うよ。"
+FAKE_GENERATION = GeneratedReply(FAKE_REPLY, "sad")
 
 
 def _db_unavailable():
@@ -34,7 +35,7 @@ def client(monkeypatch):
     """TestClient with a fake LLM and no database."""
     _isolate_backend(monkeypatch)
     monkeypatch.setattr(ChatEngine, "_resolve_client", lambda self, api_key=None: object())
-    monkeypatch.setattr(ChatEngine, "_call_language_model", lambda self, client, messages: FAKE_REPLY)
+    monkeypatch.setattr(ChatEngine, "_call_language_model", lambda self, client, messages: FAKE_GENERATION)
     with TestClient(app) as test_client:
         yield test_client
 
@@ -235,3 +236,41 @@ def test_continuation_keeps_topic_without_database(client) -> None:
     second = client.post("/api/chat", json={"text": "その続きなんだけど", "user_id": user_id}).json()
 
     assert second["turn_metadata"]["topic"] == first["turn_metadata"]["topic"]
+
+
+def _engine_with_llm_reaction(monkeypatch, reaction_score):
+    from tests.fake_openai import FakeOpenAI, schema_of
+
+    def responder(call):
+        payload = {"emotion": "sad", "secondary_emotion": None, "intensity": 0.7, "reason": "疲れている"}
+        if "reaction" in schema_of(call)["properties"]:
+            label = "engaged" if reaction_score >= 0.5 else "dismissive"
+            payload["reaction"] = {"label": label, "score": reaction_score, "reason": "テスト"}
+        return payload
+
+    fake = FakeOpenAI(responder)
+    _isolate_backend(monkeypatch)
+    monkeypatch.delenv("RECOMATE_EMOTION_ANALYZER", raising=False)
+    monkeypatch.setattr(ChatEngine, "_resolve_client", lambda self, api_key=None: fake)
+    monkeypatch.setattr(ChatEngine, "_call_language_model", lambda self, client, messages: FAKE_GENERATION)
+    return ChatEngine(), fake
+
+
+@pytest.mark.parametrize("reaction_score", [1.0, 0.0])
+def test_llm_reaction_score_drives_bandit_learning(monkeypatch, reaction_score) -> None:
+    engine, fake = _engine_with_llm_reaction(monkeypatch, reaction_score)
+
+    first = engine.handle_turn("仕事の会議で疲れた")
+    second = engine.handle_turn("うーん")
+
+    topic = first.turn_metadata["topic"]
+    learned = engine.topic_summary()["topics"][topic]["value"]
+    expected = 0.1 * (0.35 * first.reward + 0.65 * reaction_score)
+
+    assert first.user_emotion["source"] == "llm"
+    assert second.turn_metadata["previous_turn_reaction"]["score"] == reaction_score
+    assert learned == pytest.approx(expected, abs=1e-3)
+    # One analysis call per turn; the reply's expression comes from generation.
+    assert len(fake.calls) == 2
+    assert first.assistant_emotion["primary_emotions"] == ["sad"]
+    assert first.assistant_emotion["source"] == "llm"

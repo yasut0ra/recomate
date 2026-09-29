@@ -33,9 +33,15 @@
   - 学習状態は `data/bandit_state.json`（`RECOMATE_BANDIT_STATE_PATH` で変更、`off` で無効）に保存され、再起動後も引き継がれます。
 - 学習ループ（2026-09-26〜）
   - バンディットの報酬はターン直後ではなく、ユーザーの反応が分かった時点で確定します。
-  - 次のユーザー発話（30分以内）: 応答品質スコア35% + 反応スコア65%（`calculate_engagement_reward`）。
+  - 次のユーザー発話（30分以内）: 応答品質スコア35% + 反応スコア65%（LLM 判定、失敗時は `calculate_engagement_reward`）。
   - 明示フィードバック: `POST /api/chat/feedback`（👍=1.0 / 👎=0.0、1ターン1回）。好みプロファイルにも反映。
   - 同意設定の `learning_paused` が有効なら、バンディット学習もフィードバック反映も行いません。
+- `api/turn_analyzer.py`
+  - 感情分析と反応判定を担当。ユーザー発話ごとに小型 LLM を1回呼び、感情（happy/sad/angry/surprised/neutral）と、評価待ちの前ターンがあればその返答への反応（engaged/neutral/dismissive + 0〜1 スコア）を JSON スキーマ（strict）で取得します。
+  - アシスタントの返答の感情（キャラクターの表情用）は、返答生成と同じ呼び出しで `{reply, expression}` の JSON（strict スキーマ）として受け取ります。追加の分析呼び出しはありません。モデルがスキーマに従わなかった場合や定型フォールバック返答はキーワード判定です。
+  - 1ターンの LLM 呼び出しは「分析（小型モデル）＋生成」の2回です。
+  - 出力はキーワード版 `EmotionAnalyzer` と同じ形（`source: "llm" | "keyword"` を追加）なので、プランナー・報酬・バンディット・UI は変更不要です。
+  - クライアント無し・タイムアウト（8秒）・不正な出力のときは `EmotionAnalyzer` + `calculate_engagement_reward` にフォールバックします。
 - `api/db/`
   - SQLAlchemy モデル、接続設定、Alembic マイグレーション。
 
